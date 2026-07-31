@@ -1,0 +1,16 @@
+{
+  "senderFirstName": "نمونه",
+  "senderLastName": "فرستنده",
+  "senderMobile": "09120000000",
+  "senderNationalId": "0000000000",
+  "receiverFirstName": "نمونه",
+  "receiverLastName": "گیرنده",
+  "receiverMobile": "09120000001",
+  "receiverNationalId": "1111111111",
+  "plateNumber": "12ب34567",
+  "driverName": "نام راننده ثبت‌شده",
+  "driverNationalId": "2222222222",
+  "cargoName": "بار نمونه",
+  "cargoWeight": "1000",
+  "freightCost": "1000000"
+}

@@ -1,0 +1,96 @@
+﻿
+> barbarg-bot@0.1.0 build
+> next build
+
+Γû▓ Next.js 16.2.10 (Turbopack)
+- Environments: .env
+
+  Creating an optimized production build ...
+Γ£ô Compiled successfully in 7.4s
+  Running TypeScript ...
+  Finished TypeScript in 5.0s ...
+  Collecting page data using 19 workers ...
+  Generating static pages using 19 workers (0/67) ...
+  Generating static pages using 19 workers (16/67) 
+  Generating static pages using 19 workers (33/67) 
+  Generating static pages using 19 workers (50/67) 
+Γ£ô Generating static pages using 19 workers (67/67) in 497ms
+  Finalizing page optimization ...
+
+Route (app)
+Γöî Γùï /
+Γö£ Γùï /_not-found
+Γö£ ╞Æ /api/accounts
+Γö£ ╞Æ /api/accounts/[id]
+Γö£ ╞Æ /api/activity-logs
+Γö£ ╞Æ /api/auth/[...nextauth]
+Γö£ ╞Æ /api/auth/audit
+Γö£ ╞Æ /api/auth/login
+Γö£ ╞Æ /api/auth/profile
+Γö£ ╞Æ /api/auth/users
+Γö£ ╞Æ /api/automation/browsers
+Γö£ ╞Æ /api/automation/logs
+Γö£ ╞Æ /api/automation/session
+Γö£ ╞Æ /api/automation/tasks
+Γö£ ╞Æ /api/automation/trigger
+Γö£ ╞Æ /api/automation/workers
+Γö£ ╞Æ /api/cargo
+Γö£ ╞Æ /api/companies
+Γö£ ╞Æ /api/dashboard
+Γö£ ╞Æ /api/drivers
+Γö£ ╞Æ /api/drivers/[id]
+Γö£ ╞Æ /api/error-logs
+Γö£ ╞Æ /api/health
+Γö£ ╞Æ /api/history
+Γö£ ╞Æ /api/logs
+Γö£ ╞Æ /api/notifications
+Γö£ ╞Æ /api/plates
+Γö£ ╞Æ /api/quick-jobs
+Γö£ ╞Æ /api/receivers
+Γö£ ╞Æ /api/senders
+Γö£ ╞Æ /api/settings
+Γö£ ╞Æ /api/tasks
+Γö£ ╞Æ /api/templates
+Γö£ ╞Æ /api/templates/[id]
+Γö£ ╞Æ /api/vehicles
+Γö£ ╞Æ /api/waybills
+Γö£ Γùï /login
+Γö£ ╞Æ /panel
+Γö£ ╞Æ /panel/accounts
+Γö£ ╞Æ /panel/automation
+Γö£ ╞Æ /panel/automation/browsers
+Γö£ ╞Æ /panel/automation/queue
+Γö£ ╞Æ /panel/automation/workers
+Γö£ ╞Æ /panel/captcha
+Γö£ ╞Æ /panel/cargo
+Γö£ ╞Æ /panel/companies
+Γö£ ╞Æ /panel/dashboard
+Γö£ ╞Æ /panel/drivers
+Γö£ ╞Æ /panel/errors
+Γö£ ╞Æ /panel/excel
+Γö£ ╞Æ /panel/fuel
+Γö£ ╞Æ /panel/history
+Γö£ ╞Æ /panel/live-status
+Γö£ ╞Æ /panel/logs
+Γö£ ╞Æ /panel/mapping
+Γö£ ╞Æ /panel/notifications
+Γö£ ╞Æ /panel/plate-inquiry
+Γö£ ╞Æ /panel/plates
+Γö£ ╞Æ /panel/quick-waybill
+Γö£ ╞Æ /panel/receivers
+Γö£ ╞Æ /panel/reports
+Γö£ ╞Æ /panel/roles
+Γö£ ╞Æ /panel/scheduler
+Γö£ ╞Æ /panel/senders
+Γö£ ╞Æ /panel/settings
+Γö£ ╞Æ /panel/users
+Γö£ ╞Æ /panel/vehicles
+Γö£ ╞Æ /panel/waybills
+Γöö ╞Æ /panel/waybills/new
+
+
+╞Æ Proxy (Middleware)
+
+Γùï  (Static)   prerendered as static content
+╞Æ  (Dynamic)  server-rendered on demand
+

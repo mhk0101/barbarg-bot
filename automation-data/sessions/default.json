@@ -1,0 +1,35 @@
+{
+  "cookies": [
+    {
+      "name": "ApplicationToken",
+      "value": "CfDJ8KBWEQqNptJDjpWS_V_NxMPpYyjZBjg5CAK5TRuHq9nLEE5je9w0SOps0URCATcNGoK94LcP_3tKXTQtjA4rKeHNp1ZbBMhLwphlJ_dSqBAc0Nobpx2mskjClsCB7-b8RNe9GjfZ0CkqUDekn7n5bNk",
+      "domain": "barname.utcms.ir",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Strict"
+    },
+    {
+      "name": ".Aggregation.Session",
+      "value": "CfDJ8KBWEQqNptJDjpWS%2FV%2FNxMOQmjtAZA4gcl3rY9JZfN%2B38hLOLpOXO6agK3UL5Qr4r643mnvMCug976pkk90QNA%2FancBX2UGi5YPoLDZAnO2cwv9kam3i%2BscWjXlgdpTgABRj%2F6rLSVPdPi0OQqF8MH6IbIlWAvjSWtL9wXgZ2ZmN",
+      "domain": "barname.utcms.ir",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "cookiesession1",
+      "value": "678B291BC916F583E287EAFB9F1457CF",
+      "domain": "barname.utcms.ir",
+      "path": "/",
+      "expires": 1815661457.738956,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": []
+}

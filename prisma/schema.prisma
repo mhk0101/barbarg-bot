@@ -1,0 +1,651 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String
+  password      String
+  phone         String?
+  department    String?
+  role          String    @default("operator")
+  status        String    @default("active")
+  avatar        String?
+  notes         String?
+  mustChangePassword Boolean @default(false)
+  failedAttempts Int      @default(0)
+  lockedUntil   DateTime?
+  lastLogin     DateTime?
+  lastActivity  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      Session[]
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+}
+
+model Session {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  token       String   @unique
+  ipAddress   String?
+  userAgent   String?
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+}
+
+model RefreshToken {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  token       String   @unique
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  resource  String
+  resourceId String?
+  details   Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+}
+
+model Company {
+  id          String   @id @default(cuid())
+  name        String
+  nationalId  String   @unique
+  phone       String?
+  address     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  senders     Sender[]
+  receivers   Receiver[]
+  accounts    Account[]
+}
+
+model Account {
+  id           String   @id @default(cuid())
+  companyId    String?
+  company      Company? @relation(fields: [companyId], references: [id])
+  username     String   @unique
+  password     String
+  nationalId   String
+  description  String?
+  status       String   @default("active")
+  dailyLimit   Int      @default(50)
+  dailyUsed    Int      @default(0)
+  lastActivity DateTime?
+  lastLogin    DateTime?
+  lastError    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  plates       LicensePlate[]
+  errorLogs    ErrorLog[]
+  automationResults AutomationResult[]
+
+  @@index([companyId])
+  @@index([status])
+}
+
+model Driver {
+  id            String   @id @default(cuid())
+  name          String
+  nationalId    String   @unique
+  phone         String
+  license       String
+  driverCard    String?
+  password      String?
+  status        String   @default("active")
+  dailyTarget   Int      @default(10)
+  workingStart  String   @default("08:00")
+  workingEnd    String   @default("17:00")
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  vehicles      Vehicle[]
+  plates        LicensePlate[]
+  waybills      Waybill[]
+}
+
+model Vehicle {
+  id                  String   @id @default(cuid())
+  driverId            String?
+  driver              Driver?  @relation(fields: [driverId], references: [id])
+  vehicleType         String
+  trailerInfo         String?
+  vehicleCard         String?
+  technicalInspection String?
+  vehicleInsurance    String?
+  status              String   @default("active")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  plates              LicensePlate[]
+  waybills            Waybill[]
+
+  @@index([driverId])
+  @@index([status])
+}
+
+model LicensePlate {
+  id          String   @id @default(cuid())
+  plateNumber String   @unique
+  province    String
+  accountId   String?
+  account     Account? @relation(fields: [accountId], references: [id])
+  vehicleId   String?
+  vehicle     Vehicle? @relation(fields: [vehicleId], references: [id])
+  driverId    String?
+  driver      Driver?  @relation(fields: [driverId], references: [id])
+  dailyTarget Int      @default(10)
+  dailyCount  Int      @default(0)
+  priority    Int      @default(0)
+  enabled     Boolean  @default(true)
+  workingStart String  @default("08:00")
+  workingEnd   String  @default("17:00")
+  status      String   @default("active")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  waybills    Waybill[]
+  fuelCards   FuelCard[]
+  templates   BarbargTemplate[]
+
+  @@index([accountId])
+  @@index([status])
+}
+
+model Sender {
+  id          String   @id @default(cuid())
+  companyId   String?
+  company     Company? @relation(fields: [companyId], references: [id])
+  name        String
+  nationalId  String
+  phone       String
+  address     String?
+  postalCode  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  waybills    Waybill[]
+}
+
+model Receiver {
+  id          String   @id @default(cuid())
+  companyId   String?
+  company     Company? @relation(fields: [companyId], references: [id])
+  name        String
+  nationalId  String
+  phone       String
+  address     String?
+  postalCode  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  waybills    Waybill[]
+}
+
+model Cargo {
+  id          String   @id @default(cuid())
+  name        String
+  code        String?
+  type        String
+  packaging   String?
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  waybills    Waybill[]
+}
+
+model Waybill {
+  id                String    @id @default(cuid())
+  waybillNumber     String?
+  status            String    @default("draft")
+  senderId          String?
+  sender            Sender?   @relation(fields: [senderId], references: [id])
+  receiverId        String?
+  receiver          Receiver? @relation(fields: [receiverId], references: [id])
+  driverId          String?
+  driver            Driver?   @relation(fields: [driverId], references: [id])
+  vehicleId         String?
+  vehicle           Vehicle?  @relation(fields: [vehicleId], references: [id])
+  plateId           String?
+  plate             LicensePlate? @relation(fields: [plateId], references: [id])
+  cargoId           String?
+  cargo             Cargo?    @relation(fields: [cargoId], references: [id])
+  cargoWeight       String?
+  cargoQuantity     String?
+  cargoValue        String?
+  originProvince    String?
+  originCity        String?
+  originAddress     String?
+  originPostalCode  String?
+  originLat         String?
+  originLng         String?
+  destProvince      String?
+  destCity          String?
+  destAddress       String?
+  destPostalCode    String?
+  destLat           String?
+  destLng           String?
+  distance          String?
+  freightCost       String?
+  insuranceCost     String?
+  loadingCost       String?
+  discount          String?
+  paymentMethod     String?
+  description       String?
+  issueDate         String?
+  issueTime         String?
+  persianDate       String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  jobs              Job[]
+  timeline          WaybillTimeline[]
+}
+
+model WaybillTimeline {
+  id         String   @id @default(cuid())
+  waybillId  String
+  waybill    Waybill  @relation(fields: [waybillId], references: [id])
+  step       String
+  status     String
+  message    String?
+  timestamp  DateTime @default(now())
+}
+
+model Job {
+  id            String   @id @default(cuid())
+  waybillId     String?
+  waybill       Waybill? @relation(fields: [waybillId], references: [id])
+  profileId     String?
+  profile       RegistrationProfile? @relation(fields: [profileId], references: [id])
+  type          String
+  status        String   @default("pending")
+  priority      Int      @default(0)
+  attempts      Int      @default(0)
+  maxRetries    Int      @default(5)
+  nextRetryAt   DateTime?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  result        String?
+  error         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  logs          JobLog[]
+  errorLogs     ErrorLog[]
+  automationResults AutomationResult[]
+
+  @@index([status, createdAt])
+  @@index([waybillId])
+}
+
+model JobLog {
+  id        String   @id @default(cuid())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id])
+  level     String
+  message   String
+  details   Json?
+  createdAt DateTime @default(now())
+
+  @@index([jobId])
+}
+
+model ErrorLog {
+  id                 String   @id @default(cuid())
+  jobId              String?
+  job                Job?     @relation(fields: [jobId], references: [id])
+  accountId          String?
+  account            Account? @relation(fields: [accountId], references: [id])
+  errorCode          String
+  errorTitle         String
+  errorDescription   String
+  suggestedSolution  String?
+  retryCount         Int      @default(0)
+  retryStatus        String   @default("pending")
+  screenshotPath     String?
+  browserLog         String?
+  createdAt          DateTime @default(now())
+
+  @@index([jobId])
+  @@index([accountId])
+  @@index([createdAt])
+  @@index([retryStatus])
+}
+
+model FuelCard {
+  id            String   @id @default(cuid())
+  cardNumber    String   @unique
+  plateId       String?
+  plate         LicensePlate? @relation(fields: [plateId], references: [id])
+  fuelType      String
+  status        String   @default("active")
+  allocatedFuel Float    @default(0)
+  consumedFuel  Float    @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  fuelLogs      FuelLog[]
+}
+
+model FuelLog {
+  id        String   @id @default(cuid())
+  cardId    String
+  card      FuelCard @relation(fields: [cardId], references: [id])
+  amount    Float
+  station   String?
+  date      String
+  createdAt DateTime @default(now())
+
+  @@index([cardId])
+}
+
+model Scheduler {
+  id        String   @id @default(cuid())
+  name      String
+  cronExpr  String
+  enabled   Boolean  @default(true)
+  lastRun   DateTime?
+  nextRun   DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  title     String
+  message   String
+  type      String   @default("info")
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([read])
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  action    String
+  resource  String
+  resourceId String?
+  details   Json?
+  userId    String?
+  createdAt DateTime @default(now())
+
+  @@index([resource])
+  @@index([createdAt])
+}
+
+model WorkerStatus {
+  id            String    @id @default(cuid())
+  name          String    @unique
+  status        String    @default("idle")
+  lastHeartbeat DateTime?
+  tasksCompleted Int      @default(0)
+  tasksFailed   Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  automationResults AutomationResult[]
+}
+
+model Setting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model BarbargTemplate {
+  id              String   @id @default(cuid())
+  plateId         String?
+  plate           LicensePlate? @relation(fields: [plateId], references: [id])
+  plateNumber     String
+  senderFirstName String
+  senderLastName  String
+  senderMobile    String
+  senderPhone     String?
+  senderNationalId String
+  senderPostalCode String?
+  receiverFirstName String
+  receiverLastName  String
+  receiverMobile    String
+  receiverPhone     String?
+  receiverNationalId String
+  receiverPostalCode String?
+  driverName      String
+  driverMobile    String
+  driverLicense   String
+  driverLicenseGrade String?
+  driverCard      String?
+  cargoCapacity   String?
+  passengerCapacity String?
+  loaderType      String?
+  thirdPartyInsurance String?
+  activityLicense String?
+  cargoName       String
+  cargoCategory   String?
+  cargoPackaging  String?
+  cargoWeight     String?
+  cargoQuantity   String?
+  cargoValue      String?
+  originProvince  String
+  originCity      String
+  originAddress   String?
+  originPostalCode String?
+  destProvince    String
+  destCity        String
+  destAddress     String?
+  destPostalCode  String?
+  freightCost     String?
+  paymentMethod   String?
+  isFavorite      Boolean  @default(false)
+  useCount        Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  history         BarbargHistory[]
+  quickJobs       QuickRegistrationJob[]
+
+  @@index([plateId])
+  @@index([plateNumber])
+}
+
+model BarbargHistory {
+  id            String   @id @default(cuid())
+  templateId    String?
+  template      BarbargTemplate? @relation(fields: [templateId], references: [id])
+  plateNumber   String
+  status        String   @default("success")
+  waybillNumber String?
+  error         String?
+  createdAt     DateTime @default(now())
+
+  @@index([templateId])
+  @@index([plateNumber])
+  @@index([createdAt])
+}
+
+model QuickRegistrationJob {
+  id            String   @id @default(cuid())
+  templateId    String
+  template      BarbargTemplate @relation(fields: [templateId], references: [id])
+  plateNumber   String
+  targetCount   Int
+  completedCount Int     @default(0)
+  status        String   @default("pending")
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model BarBargAccount {
+  id              String    @id @default(cuid())
+  accountName     String
+  username        String    @unique
+  passwordEncrypted String
+  company         String?
+  status          String    @default("active")
+  lastLogin       DateTime?
+  lastError       String?
+  notes           String?
+  phone           String?
+  smsWebhookToken String?   @unique
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  profiles        RegistrationProfile[]
+  smsMessages     SmsMessage[]
+}
+
+model SmsMessage {
+  id              String    @id @default(cuid())
+  accountId       String?
+  account         BarBargAccount? @relation(fields: [accountId], references: [id])
+  fromNumber      String?
+  rawText         String
+  extractedLink   String?
+  status          String    @default("pending")
+  usedAt          DateTime?
+  resultMessage   String?
+  createdAt       DateTime  @default(now())
+
+  @@index([accountId])
+  @@index([status])
+}
+
+model AutomationResult {
+  id                String    @id @default(cuid())
+  taskId            String?
+  job               Job?      @relation(fields: [taskId], references: [id])
+  waybillNumber     String?
+  plate             String?
+  driver            String?
+  vehicle           String?
+  sender            String?
+  receiver          String?
+  accountId         String?
+  account           Account?  @relation(fields: [accountId], references: [id])
+  workerId          String?
+  worker            WorkerStatus? @relation(fields: [workerId], references: [id])
+  browserSessionId  String?
+  status            String    @default("pending")
+  resultMessage     String?
+  resultType        String    @default("info")
+  errorCode         String?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  duration          Int?
+  retryCount        Int       @default(0)
+  screenshotPath    String?
+  htmlSnapshotPath  String?
+  currentUrl        String?
+  playwrightLog     Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([status, finishedAt])
+  @@index([workerId])
+  @@index([accountId])
+}
+
+model RegistrationProfile {
+  id                  String    @id @default(cuid())
+  name                String
+  status              String    @default("active")
+
+  senderType          String?
+  senderFirstName     String
+  senderLastName      String
+  senderMobile        String
+  senderPhone         String?
+  senderNationalId    String
+  senderPostalCode    String?
+
+  receiverType        String?
+  receiverFirstName   String
+  receiverLastName    String
+  receiverMobile      String
+  receiverPhone       String?
+  receiverNationalId  String
+  receiverPostalCode  String?
+
+  plateNumber         String
+  vehicleSerialNumber String?
+  vehicleMotorNumber  String?
+  vehicleInsurancePage String?
+  vehicleSparePlate   String?
+  vehicleType         String?
+  cargoCapacity       String?
+  passengerCapacity   String?
+  loaderType          String?
+  thirdPartyInsurance String?
+  activityLicense     String?
+
+  driverName          String
+  driverNationalId    String
+  driverMobile        String?
+  driverLicense       String?
+  driverCard          String?
+  driverIdNumber      String?
+  driverGender        String?
+
+  accountId           String?
+  barbargAccount      BarBargAccount? @relation(fields: [accountId], references: [id])
+
+  cargoName           String
+  cargoCategory       String?
+  cargoPackaging      String?
+  cargoWeight         String?
+  cargoQuantity       String?
+  cargoValue          String?
+
+  originProvince      String
+  originCity          String
+  originAddress       String?
+  originPostalCode    String?
+
+  destProvince        String
+  destCity            String
+  destAddress         String?
+  destPostalCode      String?
+
+  advanceFare         String?
+  fareType            String?
+  freightCost         String?
+  transportInsurance  String?
+  totalAmount         String?
+  insuranceRate       String?
+  insuranceAmount     String?
+  paymentMethod       String?
+
+  captchaAnswer       String?
+
+  registrationsPerDay Int     @default(10)
+  intervalMinutes     Int     @default(60)
+  maxRetries          Int     @default(3)
+  retryIntervalSec    Int     @default(30)
+  priority            Int     @default(0)
+
+  lastRun             DateTime?
+  nextRun             DateTime?
+  totalRuns           Int       @default(0)
+  successfulRuns      Int       @default(0)
+  failedRuns          Int       @default(0)
+  lastError           String?
+
+  notes               String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  jobs                Job[]
+
+  @@index([status, nextRun])
+  @@index([accountId])
+  @@index([plateNumber])
+}

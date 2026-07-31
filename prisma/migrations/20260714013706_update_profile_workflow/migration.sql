@@ -1,0 +1,16 @@
+-- AlterTable
+ALTER TABLE "RegistrationProfile" ADD COLUMN     "advanceFare" TEXT,
+ADD COLUMN     "captchaAnswer" TEXT,
+ADD COLUMN     "driverGender" TEXT,
+ADD COLUMN     "driverIdNumber" TEXT,
+ADD COLUMN     "fareType" TEXT,
+ADD COLUMN     "insuranceAmount" TEXT,
+ADD COLUMN     "insuranceRate" TEXT,
+ADD COLUMN     "receiverType" TEXT,
+ADD COLUMN     "senderType" TEXT,
+ADD COLUMN     "totalAmount" TEXT,
+ADD COLUMN     "transportInsurance" TEXT,
+ADD COLUMN     "vehicleInsurancePage" TEXT,
+ADD COLUMN     "vehicleMotorNumber" TEXT,
+ADD COLUMN     "vehicleSerialNumber" TEXT,
+ADD COLUMN     "vehicleSparePlate" TEXT;
