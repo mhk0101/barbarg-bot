@@ -55,6 +55,35 @@ export class BrowserManager {
     return page
   }
 
+  /**
+   * یک context کاملاً تازه (بدون کوکی ذخیره‌شده) می‌سازد.
+   * برای «هر بار لاگین تازه» استفاده می‌شود، چون سشن سایت
+   * عمر بسیار کوتاهی دارد و اتکا به سشن ذخیره‌شده جواب نمی‌دهد.
+   */
+  async createFreshPage(accountId: string): Promise<Page | null> {
+    if (!this.browser?.isConnected()) await this.launch()
+
+    // context قبلی همین حساب را ببند تا کوکی قدیمی قاطی نشود
+    const old = this.contexts.get(accountId)
+    if (old) {
+      await old.close().catch(() => {})
+      this.contexts.delete(accountId)
+    }
+
+    const ctx = await this.browser!.newContext({
+      viewport: null,
+      locale: 'fa-IR',
+      timezoneId: 'Asia/Tehran',
+    })
+    this.contexts.set(accountId, ctx)
+
+    const page = await ctx.newPage()
+    const pageKey = `page-${accountId}-${Date.now()}`
+    this.pages.set(pageKey, page)
+    this.attachPageListeners(pageKey, page)
+    return page
+  }
+
   private attachPageListeners(pageKey: string, page: Page): void {
     const logData: PlaywrightLogData = {
       consoleErrors: [],

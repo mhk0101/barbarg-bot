@@ -5,6 +5,8 @@ import { browserManager } from '../browser/BrowserManager'
 
 const SITE_URL = 'https://barname.utcms.ir'
 const LOGIN_URL = `${SITE_URL}/Barname/Account/Login`
+// صفحه‌ی مقصد بعد از ورود موفق (فرم حقیقی/حقوقی)
+export const TARGET_URL = `${SITE_URL}/barname/Document/HagigiHogugi`
 const SESSION_DIR = path.join(process.cwd(), 'automation-data', 'sessions')
 
 function ensureDir(dir: string) { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }) }
@@ -112,6 +114,138 @@ export class LoginFlow {
       return !page.url().includes('Login')
     } catch { return false }
     finally { await browserManager.closePage(accountId) }
+  }
+
+  /**
+   * ورود تازه در یک صفحه‌ی موجود، بدون اتکا به سشن ذخیره‌شده.
+   *
+   * چون سشن سایت خیلی زود منقضی می‌شود، این متد قبل از هر عملیات
+   * صدا زده می‌شود: کد ملی و رمز را وارد می‌کند، کپچای ریاضی را با
+   * OCR حل می‌کند (تا `maxCaptchaAttempts` بار) و در صورت موفقیت
+   * به صفحه‌ی مقصد می‌رود.
+   */
+  async freshLogin(
+    page: Page,
+    username: string,
+    password: string,
+    opts?: {
+      targetUrl?: string
+      maxCaptchaAttempts?: number
+      onStep?: (msg: string, level?: 'info' | 'success' | 'error' | 'warn') => Promise<void> | void
+    },
+  ): Promise<{ success: boolean; error?: string; captchaAttempts: number }> {
+    const target = opts?.targetUrl ?? TARGET_URL
+    const maxAttempts = opts?.maxCaptchaAttempts ?? 5
+    const step = async (m: string, l: 'info' | 'success' | 'error' | 'warn' = 'info') => {
+      try { await opts?.onStep?.(m, l) } catch {}
+    }
+
+    let captchaAttempts = 0
+
+    try {
+      await step('باز کردن صفحه ورود...')
+      await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 45000 })
+      await this.waitForPageReady(page)
+
+      // اگر از قبل وارد بودیم، مستقیم برو به مقصد
+      if (!page.url().includes('Login')) {
+        await step('از قبل وارد شده‌ایم', 'success')
+        return await this.goToTarget(page, target, step, captchaAttempts)
+      }
+
+      await step('وارد کردن کد ملی و رمز عبور...')
+      const userInput = await page.$('#NationalCode, input[name="NationalCode"]')
+      if (!userInput) return { success: false, error: 'فیلد کد ملی پیدا نشد', captchaAttempts }
+      await userInput.fill(username)
+
+      const passInput = await page.$('#user-password, input[type="password"]')
+      if (!passInput) return { success: false, error: 'فیلد رمز عبور پیدا نشد', captchaAttempts }
+      await passInput.fill(password)
+
+      // --- حلقه‌ی حل کپچا + تلاش برای ورود ---
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        captchaAttempts = attempt
+
+        const captchaText = await readCaptchaText(page)
+        const answer = solveMathCaptcha(captchaText)
+
+        if (!answer) {
+          await step(`کپچا خوانده نشد (تلاش ${attempt}/${maxAttempts}) — تصویر تازه می‌گیرم`, 'warn')
+          await refreshCaptcha(page)
+          continue
+        }
+
+        await step(`کپچا: «${captchaText.trim()}» = ${answer} (تلاش ${attempt}/${maxAttempts})`)
+        const captchaInput = await page.$('#DNTCaptchaInputText')
+        if (!captchaInput) return { success: false, error: 'فیلد کپچا پیدا نشد', captchaAttempts }
+        await captchaInput.fill(answer)
+
+        // کمی مکث انسانی قبل از کلیک
+        await page.waitForTimeout(600 + Math.random() * 900)
+
+        const loginBtn = await page.$('#inter, button[type="submit"]')
+        if (!loginBtn) return { success: false, error: 'دکمه ورود پیدا نشد', captchaAttempts }
+        await loginBtn.click()
+
+        await page.waitForTimeout(4000)
+        await this.waitForPageReady(page)
+
+        if (!page.url().includes('Login')) {
+          await step('ورود موفق', 'success')
+          return await this.goToTarget(page, target, step, captchaAttempts)
+        }
+
+        // هنوز در صفحه‌ی ورودیم — پیام خطای سایت را بخوان
+        let siteMsg = ''
+        try {
+          const errEl = await page.$('.alert-danger, .text-danger, .validation-summary-errors, [role="alert"]')
+          if (errEl) siteMsg = ((await errEl.textContent()) || '').trim().replace(/\s+/g, ' ').slice(0, 160)
+        } catch {}
+
+        // اگر خطا مربوط به نام کاربری/رمز باشد، تکرار بی‌فایده است
+        if (siteMsg && /رمز|کاربر|کد ملی|نام کاربری|قفل|مسدود/.test(siteMsg) && !/کپچا|امنیتی|تصویر/.test(siteMsg)) {
+          await step(`خطای سایت: ${siteMsg}`, 'error')
+          return { success: false, error: siteMsg, captchaAttempts }
+        }
+
+        await step(siteMsg ? `ورود ناموفق: ${siteMsg}` : `ورود ناموفق (تلاش ${attempt}/${maxAttempts})`, 'warn')
+
+        // کپچا را تازه کن و دوباره اطلاعات را پر کن (سایت معمولاً فرم را خالی می‌کند)
+        await refreshCaptcha(page)
+        try {
+          const u = await page.$('#NationalCode, input[name="NationalCode"]')
+          if (u) await u.fill(username)
+          const p = await page.$('#user-password, input[type="password"]')
+          if (p) await p.fill(password)
+        } catch {}
+      }
+
+      return { success: false, error: `ورود ناموفق پس از ${maxAttempts} تلاش (کپچا/اعتبارسنجی)`, captchaAttempts }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : 'خطای نامشخص در ورود', captchaAttempts }
+    }
+  }
+
+  private async goToTarget(
+    page: Page,
+    target: string,
+    step: (m: string, l?: 'info' | 'success' | 'error' | 'warn') => Promise<void>,
+    captchaAttempts: number,
+  ): Promise<{ success: boolean; error?: string; captchaAttempts: number }> {
+    await step('رفتن به صفحه عملیات...')
+    try {
+      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 45000 })
+      await this.waitForPageReady(page)
+    } catch (e) {
+      return { success: false, error: `خطا در باز کردن صفحه مقصد: ${e instanceof Error ? e.message : ''}`, captchaAttempts }
+    }
+
+    if (page.url().includes('Login')) {
+      return { success: false, error: 'پس از ورود دوباره به صفحه ورود برگشتیم (سشن پذیرفته نشد)', captchaAttempts }
+    }
+
+    await step(`صفحه عملیات باز شد: ${page.url()}`, 'success')
+    return { success: true, captchaAttempts }
   }
 
   async automatedLogin(accountId: string, username: string, password: string): Promise<{ success: boolean; error?: string }> {

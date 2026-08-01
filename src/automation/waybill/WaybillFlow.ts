@@ -47,6 +47,7 @@ export class WaybillFlow {
 
   async navigateToCreate(): Promise<boolean> {
     const urls = [
+      `${SITE_URL}/barname/Document/HagigiHogugi`,
       `${SITE_URL}/Barname/Waybill/Create`,
       `${SITE_URL}/Barname/Waybill/New`,
       `${SITE_URL}/Barname/Waybill`,

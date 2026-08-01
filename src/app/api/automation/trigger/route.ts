@@ -71,18 +71,64 @@ export async function POST(request: NextRequest) {
         } catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : 'خطا', success: false }) }
       }
       case 'trigger': {
-        const { plateNumber, count, accountId } = body
+        const { plateNumber, count, accountId, profileId: explicitProfileId } = body
         if (!plateNumber || !count) return NextResponse.json({ error: 'شماره پلاک و تعداد الزامی است' }, { status: 400 })
 
+        // ---- FIX: a job MUST carry a profileId, otherwise the worker has no
+        // form data to fill and dies with "داده باربرگ یافت نشد".
+        // Resolve the registration profile for this plate (+account if given).
+        let profile = null
+
+        if (explicitProfileId) {
+          profile = await prisma.registrationProfile.findUnique({ where: { id: explicitProfileId } })
+          if (!profile) {
+            return NextResponse.json({ error: 'پروفایل انتخاب‌شده یافت نشد' }, { status: 404 })
+          }
+        } else {
+          // normalise Persian/Arabic digits so "۱۲ ب ۳۴۵" matches "12 ب 345"
+          const normalise = (s: string) =>
+            s.replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+             .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+             .replace(/\s+/g, '')
+             .trim()
+
+          const target = normalise(plateNumber)
+
+          const candidates = await prisma.registrationProfile.findMany({
+            where: {
+              status: 'active',
+              ...(accountId && accountId !== 'default' ? { accountId } : {}),
+            },
+          })
+
+          profile = candidates.find((p) => normalise(p.plateNumber) === target)
+                 || candidates.find((p) => normalise(p.plateNumber).includes(target))
+                 || null
+        }
+
+        if (!profile) {
+          return NextResponse.json({
+            error: `هیچ پروفایل فعالی برای پلاک «${plateNumber}» یافت نشد. ابتدا از صفحه «پروفایل‌ها» یک پروفایل برای این پلاک بسازید.`,
+          }, { status: 404 })
+        }
+
         const createdJobs = await prisma.job.createManyAndReturn({
-          data: Array.from({ length: count }, () => ({ type: 'REGISTER_WAYBILL', status: 'pending', priority: 0, attempts: 0, maxRetries: 3 })),
+          data: Array.from({ length: count }, () => ({
+            type: 'REGISTER_WAYBILL',
+            status: 'pending',
+            priority: profile!.priority ?? 0,
+            attempts: 0,
+            maxRetries: profile!.maxRetries ?? 3,
+            profileId: profile!.id,
+          })),
         })
 
         for (let i = 0; i < createdJobs.length; i++) {
           const job = createdJobs[i]
           try {
             await automationQueue.add('process-waybill', {
-              taskId: job.id, plateNumber, accountId: accountId || 'default',
+              taskId: job.id, plateNumber,
+              accountId: profile!.accountId || accountId || 'default',
               jobIndex: i, totalJobs: createdJobs.length,
             }, { delay: Math.floor(Math.random() * 75000 + 45000) * i })
           } catch (err) {
@@ -92,9 +138,14 @@ export async function POST(request: NextRequest) {
         }
 
         await prisma.activityLog.create({
-          data: { action: 'jobs_created', resource: 'automation', details: { plateNumber, count, jobIds: createdJobs.map((j) => j.id) } },
+          data: { action: 'jobs_created', resource: 'automation', details: { plateNumber, count, profileId: profile!.id, jobIds: createdJobs.map((j) => j.id) } },
         })
-        return NextResponse.json({ success: true, message: `${count} وظیفه در صف اضافه شد`, jobs: createdJobs.map((j) => ({ id: j.id, status: j.status })) })
+        return NextResponse.json({
+          success: true,
+          message: `${count} وظیفه با پروفایل «${profile!.name}» در صف اضافه شد`,
+          profile: { id: profile!.id, name: profile!.name },
+          jobs: createdJobs.map((j) => ({ id: j.id, status: j.status })),
+        })
       }
       default:
         return NextResponse.json({ error: 'عملیت نامعتبر' }, { status: 400 })

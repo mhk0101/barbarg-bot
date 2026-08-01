@@ -55,80 +55,72 @@ export async function processWaybillJob(taskId: string): Promise<void> {
       return
     }
 
-    let hasSession = browserManager.hasSession(accountId)
-    await log(taskId, 'info', `حساب: ${account.username} | وضعیت نشست: ${hasSession ? 'موجود' : 'نیاز به ورود'}`)
+    // ------------------------------------------------------------------
+    // ورود تازه در هر اجرا.
+    // سشن این سایت عمر بسیار کوتاهی دارد و به IP هم حساس است، بنابراین
+    // به سشن ذخیره‌شده اتکا نمی‌کنیم: هر بار از صفر لاگین می‌کنیم،
+    // کپچا را حل می‌کنیم و مستقیم وارد صفحه‌ی عملیات می‌شویم.
+    // ------------------------------------------------------------------
+    await log(taskId, 'info', `حساب: ${account.username} | حالت: ورود تازه در هر اجرا`)
 
-    if (!hasSession) {
-      await log(taskId, 'info', 'باز کردن مرورگر برای ورود...')
-      const browser = await browserManager.launch(false)
-      const context = await browser.newContext()
-      const page = await context.newPage()
-      await page.goto('https://barname.utcms.ir/Barname/Account/Login', { timeout: 30000 })
-      await log(taskId, 'info', 'صفحه ورود باز شد')
+    await browserManager.launch(false)
+    const page = await browserManager.createFreshPage(accountId)
+    if (!page) throw new Error('خطا در ایجاد صفحه')
 
-      await page.fill('#NationalCode', account.username)
-      await page.fill('#user-password', decryptPassword(account.passwordEncrypted))
-      await log(taskId, 'info', 'اطلاعات ورود وارد شد')
+    const loginResult = await loginFlow.freshLogin(
+      page,
+      account.username,
+      decryptPassword(account.passwordEncrypted),
+      {
+        maxCaptchaAttempts: 5,
+        onStep: async (msg, level = 'info') => {
+          await log(taskId, level === 'warn' ? 'warn' : level, msg)
+        },
+      },
+    )
 
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const { captchaSolver } = await import('../src/automation/captcha/CaptchaSolver')
-        const result = await captchaSolver.solveCaptcha(page)
-        if (result.text) {
-          const input = await page.$('#DNTCaptchaInputText')
-          if (input) { await input.fill(result.text); await log(taskId, 'info', `کپچا حل شد: ${result.text}`); break }
-        }
-        await captchaSolver.refreshCaptcha(page)
-      }
+    if (!loginResult.success) {
+      const screenshotDir = path.join(process.cwd(), 'automation-data', 'screenshots')
+      if (!fs.existsSync(screenshotDir)) fs.mkdirSync(screenshotDir, { recursive: true })
+      const screenshotPath = path.join(screenshotDir, `login-failed-${accountId}-${Date.now()}.png`)
+      try { await page.screenshot({ path: screenshotPath, fullPage: true }) } catch {}
 
-      const loginBtn = await page.$('#inter')
-      if (loginBtn) await loginBtn.click()
-      await page.waitForTimeout(5000)
+      await prisma.barBargAccount.update({
+        where: { id: account.id },
+        data: { lastError: loginResult.error || 'ورود ناموفق' },
+      }).catch(() => {})
 
-      if (page.url().includes('Login')) {
-        const screenshotDir = path.join(process.cwd(), 'automation-data', 'screenshots')
-        if (!fs.existsSync(screenshotDir)) fs.mkdirSync(screenshotDir, { recursive: true })
-        const screenshotPath = path.join(screenshotDir, `login-failed-${Date.now()}.png`)
-        await page.screenshot({ path: screenshotPath, fullPage: true })
-        await prisma.account.update({ where: { id: accountId }, data: { lastError: 'ورود ناموفق', lastActivity: new Date() } })
-        await prisma.automationResult.update({
-          where: { id: automationResult.id },
-          data: {
-            status: 'failed',
-            accountId,
-            resultMessage: 'ورود ناموفق',
-            resultType: 'error',
-            errorCode: 'LOGIN_FAILED',
-            screenshotPath,
-            finishedAt: new Date(),
-            duration: Date.now() - startedAt,
-          },
-        })
-        await log(taskId, 'error', 'ورود ناموفق')
-        await browser.close()
-        await prisma.job.update({ where: { id: taskId }, data: { status: 'failed', error: 'ورود ناموفق', completedAt: new Date() } })
-        return
-      }
+      await prisma.automationResult.update({
+        where: { id: automationResult.id },
+        data: {
+          status: 'failed',
+          accountId,
+          resultMessage: loginResult.error || 'ورود ناموفق',
+          resultType: 'error',
+          errorCode: 'LOGIN_FAILED',
+          screenshotPath,
+          currentUrl: page.url(),
+          finishedAt: new Date(),
+          duration: Date.now() - startedAt,
+        },
+      })
 
-      const sessionDir = path.join(process.cwd(), 'automation-data', 'sessions')
-      if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true })
-      await context.storageState({ path: path.join(sessionDir, `${accountId}.json`) })
-      await browser.close()
-      await prisma.account.update({ where: { id: accountId }, data: { lastLogin: new Date(), lastError: null } })
-      await log(taskId, 'success', 'ورود موفق - نشست ذخیره شد')
-      hasSession = true
-    }
-
-    await log(taskId, 'info', 'مرورگر راه‌اندازی شد')
-    await browserManager.launch()
-    const valid = await loginFlow.isSessionValid(accountId)
-    if (!valid) {
-      await log(taskId, 'error', 'نشست منقضی شده')
-      await failJobAndResult(taskId, automationResult.id, 'نشست منقضی شده', 'error', startedAt)
+      await log(taskId, 'error', `ورود ناموفق: ${loginResult.error} (تلاش کپچا: ${loginResult.captchaAttempts})`)
+      await prisma.job.update({
+        where: { id: taskId },
+        data: { status: 'failed', error: loginResult.error || 'ورود ناموفق', completedAt: new Date() },
+      })
+      await browserManager.closePage(accountId)
       return
     }
 
-    const page = await browserManager.createPage(accountId)
-    if (!page) throw new Error('خطا در ایجاد صفحه')
+    // نشست تازه را ذخیره کن (برای ابزارهای تشخیصی مفید است)
+    await browserManager.saveSession(accountId).catch(() => {})
+    await prisma.barBargAccount.update({
+      where: { id: account.id },
+      data: { lastLogin: new Date(), lastError: null },
+    }).catch(() => {})
+    await log(taskId, 'success', `ورود موفق (کپچا در ${loginResult.captchaAttempts} تلاش)`)
 
     await prisma.automationResult.update({
       where: { id: automationResult.id },
@@ -137,9 +129,15 @@ export async function processWaybillJob(taskId: string): Promise<void> {
 
     const flow = new WaybillFlow(page, accountId)
 
-    await log(taskId, 'info', 'باز کردن فرم باربرگ...')
-    const navigated = await flow.navigateToCreate()
-    if (!navigated) throw new Error('خطا در باز کردن فرم')
+    // freshLogin قبلاً ما را به صفحه‌ی عملیات رسانده است؛ فقط اگر
+    // به هر دلیلی جای دیگری بودیم، دوباره تلاش می‌کنیم.
+    if (!page.url().toLowerCase().includes('hagigihogugi')) {
+      await log(taskId, 'info', 'باز کردن فرم باربرگ...')
+      const navigated = await flow.navigateToCreate()
+      if (!navigated) throw new Error('خطا در باز کردن فرم')
+    } else {
+      await log(taskId, 'info', `فرم از قبل باز است: ${page.url()}`)
+    }
 
     const waybillData = await resolveWaybillData(taskId)
     if (!waybillData) throw new Error('داده باربرگ یافت نشد')
