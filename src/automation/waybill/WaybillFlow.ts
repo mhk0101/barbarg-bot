@@ -329,15 +329,17 @@ export class WaybillFlow {
   }
 
   async handleCaptcha(): Promise<{ solved: boolean; needsManual: boolean; screenshotPath?: string }> {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const captchaResult = await captchaSolver.solveCaptcha(this.page)
-      if (!captchaResult.needsManualReview) {
-        const input = await this.page.$('#DNTCaptchaInputText')
-        if (input) { await input.fill(captchaResult.text); return { solved: true, needsManual: false } }
-      }
+    // اگر اصلاً کپچایی در این صفحه نیست، کاری لازم نیست
+    const hasCaptcha = await this.page.$('#dntCaptchaImg, img[alt="captcha"], img[src*="captcha" i]')
+    if (!hasCaptcha) return { solved: true, needsManual: false }
+
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const cap = await captchaSolver.solveAndFill(this.page)
+      if (cap.filled) return { solved: true, needsManual: false }
       await captchaSolver.refreshCaptcha(this.page)
-      await this.page.waitForTimeout(1500)
+      await this.page.waitForTimeout(900)
     }
+
     const screenshotPath = await browserManager.screenshot(this.page, 'captcha-needs-manual')
     return { solved: false, needsManual: true, screenshotPath }
   }

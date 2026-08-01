@@ -2,6 +2,7 @@ import type { Page } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import { browserManager } from '../browser/BrowserManager'
+import { captchaSolver, normalizeDigits } from '../captcha/CaptchaSolver'
 
 const SITE_URL = 'https://barname.utcms.ir'
 const LOGIN_URL = `${SITE_URL}/Barname/Account/Login`
@@ -11,44 +12,9 @@ const SESSION_DIR = path.join(process.cwd(), 'automation-data', 'sessions')
 
 function ensureDir(dir: string) { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }) }
 
-function solveMathCaptcha(text: string): string | null {
-  // Captcha is a simple math expression like "6+0", "8-3", "12*5"
-  const cleaned = text.replace(/\s+/g, '').trim()
-  const match = cleaned.match(/^(-?\d+)\s*([+\-*/÷])\s*(-?\d+)$/)
-  if (!match) return null
-  const a = parseInt(match[1])
-  const op = match[2]
-  const b = parseInt(match[3])
-  switch (op) {
-    case '+': return String(a + b)
-    case '-': return String(a - b)
-    case '*': return String(a * b)
-    case '/': return b !== 0 ? String(Math.round(a / b)) : null
-    case '÷': return b !== 0 ? String(Math.round(a / b)) : null
-    default: return null
-  }
-}
-
-async function readCaptchaText(page: Page): Promise<string> {
-  try {
-    // Try to get captcha image and OCR it
-    const captchaImg = await page.$('#dntCaptchaImg, img[alt="captcha"], img[src*="captcha"]')
-    if (!captchaImg) return ''
-
-    // Take screenshot of captcha
-    const buffer = await captchaImg.screenshot()
-    const Tesseract = require('tesseract.js')
-    const result = await Tesseract.recognize(buffer, 'eng', { logger: () => {} })
-    return result.data.text.trim()
-  } catch { return '' }
-}
-
+/** تصویر تازه‌ی کپچا (از طریق حل‌کننده‌ی مرکزی، با انتظار برای بارگذاری) */
 async function refreshCaptcha(page: Page): Promise<void> {
-  try {
-    const refreshBtn = await page.$('#dntCaptchaRefreshButton, a[data-ajax-url*="Refresh"]')
-    if (refreshBtn) await refreshBtn.click()
-    await page.waitForTimeout(1500)
-  } catch {}
+  await captchaSolver.refreshCaptcha(page)
 }
 
 export class LoginFlow {
@@ -166,19 +132,23 @@ export class LoginFlow {
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         captchaAttempts = attempt
 
-        const captchaText = await readCaptchaText(page)
-        const answer = solveMathCaptcha(captchaText)
+        // حل کپچا + نوشتن در فیلد + تأیید اینکه واقعاً نوشته شد
+        const cap = await captchaSolver.solveAndFill(page, {
+          onLog: async (m, l) => { await step(`[کپچا ${attempt}/${maxAttempts}] ${m}`, l === 'success' ? 'info' : l) },
+        })
 
-        if (!answer) {
-          await step(`کپچا خوانده نشد (تلاش ${attempt}/${maxAttempts}) — تصویر تازه می‌گیرم`, 'warn')
+        if (!cap.filled) {
+          await step(`کپچا وارد نشد (تلاش ${attempt}/${maxAttempts}) — تصویر تازه می‌گیرم`, 'warn')
           await refreshCaptcha(page)
+          // فیلدهای ورود ممکن است پاک شده باشند
+          try {
+            const u = await page.$('#NationalCode, input[name="NationalCode"]')
+            if (u && !(await u.inputValue())) await u.fill(username)
+            const p = await page.$('#user-password, input[type="password"]')
+            if (p && !(await p.inputValue())) await p.fill(password)
+          } catch { /* ignore */ }
           continue
         }
-
-        await step(`کپچا: «${captchaText.trim()}» = ${answer} (تلاش ${attempt}/${maxAttempts})`)
-        const captchaInput = await page.$('#DNTCaptchaInputText')
-        if (!captchaInput) return { success: false, error: 'فیلد کپچا پیدا نشد', captchaAttempts }
-        await captchaInput.fill(answer)
 
         // کمی مکث انسانی قبل از کلیک
         await page.waitForTimeout(600 + Math.random() * 900)
@@ -208,7 +178,12 @@ export class LoginFlow {
           return { success: false, error: siteMsg, captchaAttempts }
         }
 
-        await step(siteMsg ? `ورود ناموفق: ${siteMsg}` : `ورود ناموفق (تلاش ${attempt}/${maxAttempts})`, 'warn')
+        await step(
+          siteMsg
+            ? `ورود ناموفق: ${siteMsg}`
+            : `ورود ناموفق — پاسخ کپچا «${cap.answer}» پذیرفته نشد (تلاش ${attempt}/${maxAttempts})`,
+          'warn',
+        )
 
         // کپچا را تازه کن و دوباره اطلاعات را پر کن (سایت معمولاً فرم را خالی می‌کند)
         await refreshCaptcha(page)
@@ -217,7 +192,9 @@ export class LoginFlow {
           if (u) await u.fill(username)
           const p = await page.$('#user-password, input[type="password"]')
           if (p) await p.fill(password)
-        } catch {}
+          const c = await page.$('#DNTCaptchaInputText, input[name="DNTCaptchaInputText"]')
+          if (c) await c.fill('')
+        } catch { /* ignore */ }
       }
 
       return { success: false, error: `ورود ناموفق پس از ${maxAttempts} تلاش (کپچا/اعتبارسنجی)`, captchaAttempts }
@@ -265,14 +242,10 @@ export class LoginFlow {
       await page.fill('#NationalCode', username)
       await page.fill('#user-password', password)
 
-      // Solve captcha
+      // Solve captcha (حل + نوشتن در فیلد + تأیید)
       for (let attempt = 0; attempt < 5; attempt++) {
-        const captchaText = await readCaptchaText(page)
-        const answer = solveMathCaptcha(captchaText)
-        if (answer) {
-          const input = await page.$('#DNTCaptchaInputText')
-          if (input) { await input.fill(answer); break }
-        }
+        const cap = await captchaSolver.solveAndFill(page)
+        if (cap.filled) break
         await refreshCaptcha(page)
       }
 
