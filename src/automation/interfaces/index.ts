@@ -1,5 +1,8 @@
 export interface WaybillData {
+  /** «حقیقی» یا «حقوقی» — پیش‌فرض حقوقی */
   senderType?: string
+  /** نام شرکت — فقط وقتی نوع «حقوقی» است */
+  senderOfficeName?: string
   senderFirstName: string
   senderLastName: string
   senderMobile: string

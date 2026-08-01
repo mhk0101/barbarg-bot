@@ -96,7 +96,7 @@ const STEPS = [
   { label: 'بازبینی', icon: Eye },
 ]
 
-const SENDER_TYPES = ['شرکتی', 'حقیقی']
+const SENDER_TYPES = ['حقیقی', 'حقوقی']  // مطابق سایت: 1=حقیقی (پیش‌فرض)، 2=حقوقی
 const RECEIVER_TYPES = ['شرکتی', 'نیمه‌شرکتی', 'حقیقی', 'حاجی']
 const INSURANCE_OPTIONS = ['دارد', 'ندارد']
 const GENDER_OPTIONS = ['مرد', 'زن']

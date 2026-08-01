@@ -3,6 +3,7 @@ import path from 'path'
 import fs from 'fs'
 import { browserManager } from '../browser/BrowserManager'
 import { captchaSolver, normalizeDigits } from '../captcha/CaptchaSolver'
+import { gotoResilient, reloadResilient, isIpBlockError, runWithBlockRetry } from '../browser/Resilience'
 
 const SITE_URL = 'https://barname.utcms.ir'
 const LOGIN_URL = `${SITE_URL}/Barname/Account/Login`
@@ -90,7 +91,42 @@ export class LoginFlow {
    * OCR حل می‌کند (تا `maxCaptchaAttempts` بار) و در صورت موفقیت
    * به صفحه‌ی مقصد می‌رود.
    */
+  /**
+   * ورود تازه با «شروع مجدد کامل» در صورت بلاک شدن IP.
+   *
+   * اگر در هر مرحله IP بلاک شود، منتظر برگشتن سایت می‌ماند (با کاوش فعال،
+   * نه خواب ثابت) و کل فرایند ورود را از ابتدا تکرار می‌کند — تا ۲۰ بار.
+   */
   async freshLogin(
+    page: Page,
+    username: string,
+    password: string,
+    opts?: {
+      targetUrl?: string
+      maxCaptchaAttempts?: number
+      /** تعداد شروع مجدد کامل در صورت بلاک (پیش‌فرض ۲۰) */
+      maxRestarts?: number
+      onStep?: (msg: string, level?: 'info' | 'success' | 'error' | 'warn') => Promise<void> | void
+    },
+  ): Promise<{ success: boolean; error?: string; captchaAttempts: number }> {
+    const step = async (m: string, l: 'info' | 'success' | 'error' | 'warn' = 'info') => {
+      try { await opts?.onStep?.(m, l) } catch { /* ignore */ }
+    }
+
+    return await runWithBlockRetry(
+      page,
+      'ورود به سامانه',
+      () => this.freshLoginOnce(page, username, password, opts),
+      (r) => !r.success,
+      (r) => r.error ?? '',
+      {
+        maxAttempts: opts?.maxRestarts ?? 20,
+        onLog: async (m, l) => { await step(m, l) },
+      },
+    )
+  }
+
+  private async freshLoginOnce(
     page: Page,
     username: string,
     password: string,
@@ -110,7 +146,17 @@ export class LoginFlow {
 
     try {
       await step('باز کردن صفحه ورود...')
-      await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 45000 })
+      const nav = await gotoResilient(page, LOGIN_URL, {
+        maxAttempts: 20,
+        onLog: async (m, l) => { await step(m, l) },
+      })
+      if (!nav.ok) {
+        return {
+          success: false,
+          error: nav.blocked ? `بلاک: ${nav.error ?? 'IP بلاک است'}` : (nav.error || 'اتصال به سایت برقرار نشد'),
+          captchaAttempts,
+        }
+      }
       await this.waitForPageReady(page)
 
       // اگر از قبل وارد بودیم، مستقیم برو به مقصد
@@ -119,14 +165,19 @@ export class LoginFlow {
         return await this.goToTarget(page, target, step, captchaAttempts)
       }
 
-      await step('وارد کردن کد ملی و رمز عبور...')
-      const userInput = await page.$('#NationalCode, input[name="NationalCode"]')
-      if (!userInput) return { success: false, error: 'فیلد کد ملی پیدا نشد', captchaAttempts }
-      await userInput.fill(username)
+      const fillCredentials = async (): Promise<string | null> => {
+        const u = await page.$('#NationalCode, input[name="NationalCode"]')
+        if (!u) return 'فیلد کد ملی پیدا نشد'
+        await u.fill(username)
+        const p = await page.$('#user-password, input[type="password"]')
+        if (!p) return 'فیلد رمز عبور پیدا نشد'
+        await p.fill(password)
+        return null
+      }
 
-      const passInput = await page.$('#user-password, input[type="password"]')
-      if (!passInput) return { success: false, error: 'فیلد رمز عبور پیدا نشد', captchaAttempts }
-      await passInput.fill(password)
+      await step('وارد کردن کد ملی و رمز عبور...')
+      const fillErr = await fillCredentials()
+      if (fillErr) return { success: false, error: fillErr, captchaAttempts }
 
       // --- حلقه‌ی حل کپچا + تلاش برای ورود ---
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -138,8 +189,40 @@ export class LoginFlow {
         })
 
         if (!cap.filled) {
+          // تصویر کپچا اصلاً لود نشده ⇒ رفرش کامل صفحه (نه فقط تازه‌سازی تصویر)
+          if (cap.result.needsReload) {
+            await step(`تصویر کپچا لود نشده — رفرش کامل صفحه (تلاش ${attempt}/${maxAttempts})`, 'warn')
+            const rl = await reloadResilient(page, { onLog: async (m, l) => { await step(m, l) } })
+            if (!rl.ok) {
+              return {
+                success: false,
+                error: rl.blocked ? `بلاک: ${rl.error ?? ''}` : (rl.error || 'رفرش صفحه ناموفق'),
+                captchaAttempts,
+              }
+            }
+            await this.waitForPageReady(page)
+            if (!page.url().includes('Login')) {
+              await step('پس از رفرش، وارد شده‌ایم', 'success')
+              return await this.goToTarget(page, target, step, captchaAttempts)
+            }
+            await fillCredentials()
+            continue
+          }
+
           await step(`کپچا وارد نشد (تلاش ${attempt}/${maxAttempts}) — تصویر تازه می‌گیرم`, 'warn')
-          await refreshCaptcha(page)
+          const refreshed = await captchaSolver.refreshCaptcha(page)
+          if (!refreshed) {
+            await step('تازه‌سازی تصویر جواب نداد — رفرش کامل صفحه', 'warn')
+            const rl = await reloadResilient(page, { onLog: async (m, l) => { await step(m, l) } })
+            if (!rl.ok) {
+              return {
+                success: false,
+                error: rl.blocked ? `بلاک: ${rl.error ?? ''}` : (rl.error || 'رفرش صفحه ناموفق'),
+                captchaAttempts,
+              }
+            }
+            await this.waitForPageReady(page)
+          }
           // فیلدهای ورود ممکن است پاک شده باشند
           try {
             const u = await page.$('#NationalCode, input[name="NationalCode"]')
@@ -155,9 +238,18 @@ export class LoginFlow {
 
         const loginBtn = await page.$('#inter, button[type="submit"]')
         if (!loginBtn) return { success: false, error: 'دکمه ورود پیدا نشد', captchaAttempts }
-        await loginBtn.click()
 
-        await page.waitForTimeout(4000)
+        try {
+          await loginBtn.click()
+          // صبر فعال تا نتیجه‌ی ورود مشخص شود — ورود ممکن است چند ثانیه طول بکشد
+          const lr = await this.waitLoginResult(page, 30000)
+          if (lr.waited >= 5) await step(`ورود ${lr.waited} ثانیه طول کشید`, 'info')
+        } catch (e) {
+          if (isIpBlockError(e)) {
+            return { success: false, error: 'بلاک: IP هنگام ارسال فرم بسته شد', captchaAttempts }
+          }
+          throw e
+        }
         await this.waitForPageReady(page)
 
         if (!page.url().includes('Login')) {
@@ -199,8 +291,53 @@ export class LoginFlow {
 
       return { success: false, error: `ورود ناموفق پس از ${maxAttempts} تلاش (کپچا/اعتبارسنجی)`, captchaAttempts }
     } catch (e) {
+      if (isIpBlockError(e)) {
+        return { success: false, error: `بلاک: ${e instanceof Error ? e.message.split('\n')[0] : ''}`, captchaAttempts }
+      }
       return { success: false, error: e instanceof Error ? e.message : 'خطای نامشخص در ورود', captchaAttempts }
     }
+  }
+
+  /**
+   * پس از کلیک «ورود» صبر می‌کند تا نتیجه مشخص شود.
+   * هر ۵۰۰ms بررسی می‌کند؛ به‌محض خروج از صفحه‌ی ورود یا ظاهر شدن خطا
+   * برمی‌گردد. این‌طور هم ورودهای کند پشتیبانی می‌شوند و هم وقت تلف نمی‌شود.
+   */
+  private async waitLoginResult(
+    page: Page,
+    maxMs = 30000,
+  ): Promise<{ ok: boolean; error?: string; waited: number }> {
+    const t0 = Date.now()
+
+    while (Date.now() - t0 < maxMs) {
+      let url = ''
+      try { url = page.url() } catch { /* در حال ناوبری */ }
+
+      if (url && !url.includes('Login')) {
+        await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
+        return { ok: true, waited: Math.round((Date.now() - t0) / 1000) }
+      }
+
+      const err = await page.evaluate(() => {
+        const sels = ['.alert-danger', '.text-danger', '.validation-summary-errors',
+                      '[role="alert"]', '.toast-error', '.swal2-html-container']
+        for (const s of sels) {
+          for (const el of Array.from(document.querySelectorAll(s))) {
+            const he = el as HTMLElement
+            if (he.offsetParent === null) continue
+            const t = (he.innerText || '').trim()
+            if (t && t.length > 2) return t.replace(/\s+/g, ' ').slice(0, 160)
+          }
+        }
+        return ''
+      }).catch(() => '')
+
+      if (err) return { ok: false, error: err, waited: Math.round((Date.now() - t0) / 1000) }
+
+      await page.waitForTimeout(500).catch(() => {})
+    }
+
+    return { ok: false, error: 'زمان انتظار ورود تمام شد', waited: Math.round((Date.now() - t0) / 1000) }
   }
 
   private async goToTarget(
@@ -210,12 +347,20 @@ export class LoginFlow {
     captchaAttempts: number,
   ): Promise<{ success: boolean; error?: string; captchaAttempts: number }> {
     await step('رفتن به صفحه عملیات...')
-    try {
-      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 45000 })
-      await this.waitForPageReady(page)
-    } catch (e) {
-      return { success: false, error: `خطا در باز کردن صفحه مقصد: ${e instanceof Error ? e.message : ''}`, captchaAttempts }
+    const nav = await gotoResilient(page, target, {
+      maxAttempts: 20,
+      onLog: async (m, l) => { await step(m, l) },
+    })
+    if (!nav.ok) {
+      return {
+        success: false,
+        error: nav.blocked
+          ? `بلاک: باز کردن صفحه عملیات — ${nav.error ?? ''}`
+          : `خطا در باز کردن صفحه مقصد: ${nav.error ?? ''}`,
+        captchaAttempts,
+      }
     }
+    await this.waitForPageReady(page)
 
     if (page.url().includes('Login')) {
       return { success: false, error: 'پس از ورود دوباره به صفحه ورود برگشتیم (سشن پذیرفته نشد)', captchaAttempts }

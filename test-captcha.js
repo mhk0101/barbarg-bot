@@ -241,6 +241,128 @@ async function ocrPerChar(page, T, att) {
   return { answer: ans, raw: expr, method: `perchar(${parts.length})` }
 }
 
+
+// ---------- template matching (Persian digits) ----------
+async function classifyTemplate(page) {
+  return page.evaluate((sel) => {
+    const img = document.querySelector(sel)
+    if (!img) return { error: 'no-image' }
+    if (!img.complete || (img.naturalWidth||0) < 8) return { error: 'not-loaded' }
+    const w = img.naturalWidth, h = img.naturalHeight
+    const c = document.createElement('canvas'); c.width=w; c.height=h
+    const ctx = c.getContext('2d'); if (!ctx) return { error:'no-ctx' }
+    ctx.drawImage(img, 0, 0)
+    let data
+    try { data = ctx.getImageData(0,0,w,h).data } catch { return { error:'tainted' } }
+    const ink=[]; let cnt=0
+    for (let y=0;y<h;y++){ const r=[]
+      for (let x=0;x<w;x++){ const i=(y*w+x)*4
+        const a=data[i+3], g=0.299*data[i]+0.587*data[i+1]+0.114*data[i+2]
+        const v=(a>40&&g<160)?1:0; r.push(v); cnt+=v }
+      ink.push(r) }
+    if (cnt < 15) return { error:'empty' }
+    const colHas=[]
+    for (let x=0;x<w;x++){ let hs=false; for(let y=0;y<h;y++){if(ink[y][x]){hs=true;break}} colHas.push(hs) }
+    const boxes=[]; let st=-1
+    for (let x=0;x<=w;x++){ const on = x<w?colHas[x]:false
+      if(on&&st===-1) st=x
+      else if(!on&&st!==-1){ if(x-st>=2){ let y0=h,y1=-1
+          for(let y=0;y<h;y++){ for(let xx=st;xx<x;xx++){ if(ink[y][xx]){ if(y<y0)y0=y; if(y>y1)y1=y; break } } }
+          if(y1>=y0) boxes.push({x0:st,x1:x,y0,y1}) } st=-1 } }
+    if (boxes.length<2||boxes.length>5) return { error:'boxes='+boxes.length }
+    const N=24
+    const gridOf=(m,x0,x1,y0,y1)=>{ const bw=x1-x0,bh=y1-y0+1,out=new Array(N*N).fill(0)
+      for(let gy=0;gy<N;gy++){ for(let gx=0;gx<N;gx++){
+        const sx0=x0+Math.floor(gx*bw/N), sx1=x0+Math.max(Math.floor((gx+1)*bw/N),Math.floor(gx*bw/N)+1)
+        const sy0=y0+Math.floor(gy*bh/N), sy1=y0+Math.max(Math.floor((gy+1)*bh/N),Math.floor(gy*bh/N)+1)
+        let on=0,tot=0
+        for(let y=sy0;y<sy1&&y<=y1;y++){ for(let x=sx0;x<sx1&&x<x1;x++){ on+=m[y][x]; tot++ } }
+        out[gy*N+gx]= tot>0 && on/tot>0.35 ? 1:0 } }
+      return out }
+    const FONTS=['Tahoma','Arial','Segoe UI','Times New Roman','Courier New','Vazirmatn','IRANSans','B Nazanin','Nazanin','sans-serif','serif']
+    const D=['\u06F0','\u06F1','\u06F2','\u06F3','\u06F4','\u06F5','\u06F6','\u06F7','\u06F8','\u06F9']
+    const OPS=[['+','+'],['-','-'],['\u00D7','*'],['\u00F7','/']]
+    const render=(ch,font)=>{ const S=96
+      const rc=document.createElement('canvas'); rc.width=S; rc.height=S
+      const rx=rc.getContext('2d'); if(!rx) return null
+      rx.fillStyle='#fff'; rx.fillRect(0,0,S,S); rx.fillStyle='#000'
+      rx.font=Math.floor(S*0.66)+'px "'+font+'"'; rx.textAlign='center'; rx.textBaseline='middle'
+      rx.fillText(ch,S/2,S/2)
+      let d; try{ d=rx.getImageData(0,0,S,S).data }catch{ return null }
+      const m=[]; let x0=S,x1=-1,y0=S,y1=-1,n=0
+      for(let y=0;y<S;y++){ const r=[]
+        for(let x=0;x<S;x++){ const i=(y*S+x)*4; const v=d[i]<140?1:0; r.push(v)
+          if(v){n++; if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y} }
+        m.push(r) }
+      if(n<8||x1<x0) return null
+      return gridOf(m,x0,x1+1,y0,y1) }
+    const rd=[],ro=[]
+    for(const f of FONTS){ for(let i=0;i<10;i++){ const g=render(D[i],f); if(g) rd.push({v:String(i),g}) }
+      for(const [ch,v] of OPS){ const g=render(ch,f); if(g) ro.push({v,g}) } }
+    if(!rd.length) return { error:'no-refs' }
+    const iou=(a,b)=>{ let I=0,U=0; for(let i=0;i<a.length;i++){ if(a[i]&&b[i])I++; if(a[i]||b[i])U++ } return U?I/U:0 }
+    const best=(g,refs)=>{ const sc=new Map()
+      for(const r of refs){ const s=iou(g,r.g); if(s>(sc.get(r.v)??0)) sc.set(r.v,s) }
+      const so=[...sc.entries()].sort((p,q)=>q[1]-p[1])
+      return { value: so[0]?.[0]??'', score: so[0]?.[1]??0 } }
+    const syms=[]
+    for(let i=0;i<boxes.length;i++){ const b=boxes[i]
+      const g=gridOf(ink,b.x0,b.x1,b.y0,b.y1)
+      const isOp = boxes.length===3 && i===1
+      const r = best(g, isOp?ro:rd)
+      syms.push({ kind:isOp?'op':'digit', value:r.value, score:r.score }) }
+    return { symbols:syms, expr:syms.map(s=>s.value).join(''), boxes:boxes.length }
+  }, IMG_SEL).catch(e => ({ error: String(e).slice(0,60) }))
+}
+
+
+// ---------- IP block resilience ----------
+const BLOCK_RE = /ERR_CONNECTION_CLOSED|ERR_CONNECTION_RESET|ERR_EMPTY_RESPONSE|ERR_CONNECTION_REFUSED|ERR_CONNECTION_TIMED_OUT|ERR_TIMED_OUT|ERR_NETWORK_CHANGED|ERR_SOCKET_NOT_CONNECTED/
+const isBlock = (e) => BLOCK_RE.test(String(e && e.message || e))
+const fmtT = (sec) => { const m = Math.floor(sec/60), s = sec%60; return m>0 ? `${m}:${String(s).padStart(2,'0')}` : `${s}s` }
+
+async function probe(page, url) {
+  try { const r = await page.request.get(url, { timeout: 12000, maxRedirects: 3 }); return r.status() > 0 }
+  catch { return false }
+}
+
+async function waitBackOnline(page, url, maxWaitMs, probeMs = 15000) {
+  const t0 = Date.now()
+  console.log(`   \u23f3 \u0635\u0628\u0631 \u062a\u0627 \u0628\u0631\u06af\u0634\u062a\u0646 \u0633\u0627\u06cc\u062a (\u062d\u062f\u0627\u06a9\u062b\u0631 ${fmtT(Math.round(maxWaitMs/1000))}) \u2014 \u0647\u0631 ${Math.round(probeMs/1000)}s \u0628\u0631\u0631\u0633\u06cc`)
+  let lastRep = 0
+  while (Date.now() - t0 < maxWaitMs) {
+    await new Promise(r => setTimeout(r, probeMs))
+    if (await probe(page, url)) {
+      console.log(`   \u2705 \u0633\u0627\u06cc\u062a \u0628\u0631\u06af\u0634\u062a (\u067e\u0633 \u0627\u0632 ${fmtT(Math.round((Date.now()-t0)/1000))})`)
+      return true
+    }
+    const el = Math.round((Date.now()-t0)/1000)
+    if (el - lastRep >= 60) { lastRep = el; console.log(`      ... ${fmtT(el)} \u06af\u0630\u0634\u062a\u0647\u060c \u0647\u0646\u0648\u0632 \u0628\u0644\u0627\u06a9`) }
+  }
+  return false
+}
+
+async function gotoResilient(page, url, label, maxAttempts = 20) {
+  for (let a = 1; a <= maxAttempts; a++) {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 })
+      if (a > 1) console.log(`   \u2705 ${label} \u062f\u0631 \u062a\u0644\u0627\u0634 ${a}/${maxAttempts}`)
+      return true
+    } catch (e) {
+      if (isBlock(e)) {
+        console.log(`   \u26a0 IP \u0628\u0644\u0627\u06a9 (${a}/${maxAttempts}) \u2014 ${label}`)
+        if (a === maxAttempts) return false
+        await waitBackOnline(page, url, 180000 + Math.random()*120000)
+      } else {
+        console.log('   \u2716 ' + String(e.message).split('\n')[0].slice(0,110))
+        if (a === maxAttempts) return false
+        await new Promise(r => setTimeout(r, 5000))
+      }
+    }
+  }
+  return false
+}
+
 async function getCreds() {
   require('dotenv').config()
   const { PrismaClient } = require('@prisma/client')
@@ -277,7 +399,8 @@ async function main() {
   const page = await ctx.newPage()
 
   console.log('\n→ باز کردن صفحه ورود...')
-  await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 })
+  const navOk = await gotoResilient(page, LOGIN_URL, '\u0635\u0641\u062d\u0647 \u0648\u0631\u0648\u062f', 20)
+  if (!navOk) { console.log('\n\u274c \u0627\u062a\u0635\u0627\u0644 \u0628\u0631\u0642\u0631\u0627\u0631 \u0646\u0634\u062f'); await browser.close(); return }
   await page.waitForTimeout(2500)
   await page.evaluate(() => { const l = document.getElementById('loading'); if (l) l.remove() }).catch(() => {})
 
@@ -306,7 +429,29 @@ async function main() {
     }
     if (answer !== null) console.log(`   ✔ از DOM خوانده شد: "${raw}" ⇒ ${answer}`)
 
-    // ۲) OCR نماد به نماد (دقیق‌ترین)
+    // ۲) تطبیق الگو (بهترین روش برای ارقام فارسی)
+    const tpl = await classifyTemplate(page)
+    if (tpl && tpl.error) {
+      console.log(`   \u2716 \u062a\u0635\u0648\u06cc\u0631: ${tpl.error}`)
+      if (tpl.error === 'not-loaded' || tpl.error === 'empty' || tpl.error === 'no-image') {
+        console.log('   \u21bb \u0631\u0641\u0631\u0634 \u06a9\u0627\u0645\u0644 \u0635\u0641\u062d\u0647...')
+        await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
+        await page.waitForTimeout(2500)
+        await page.evaluate(() => { const l = document.getElementById('loading'); if (l) l.remove() }).catch(() => {})
+        await (await page.$('#NationalCode, input[name="NationalCode"]'))?.fill(username).catch(() => {})
+        await (await page.$('#user-password, input[type="password"]'))?.fill(password).catch(() => {})
+        continue
+      }
+    }
+    if (tpl && tpl.symbols) {
+      const detail = tpl.symbols.map(s => `${s.value}(${s.score.toFixed(2)})`).join(' ')
+      const minS = Math.min(...tpl.symbols.map(s => s.score))
+      const a = solveMath(tpl.expr)
+      console.log(`   \u25c8 \u0627\u0644\u06af\u0648: ${tpl.expr} [${detail}] \u21d2 ${a ?? '\u2014'}`)
+      if (a !== null && minS >= 0.42) { answer = a; raw = tpl.expr; method = 'template' }
+    }
+
+    // ۳) OCR نماد به نماد
     if (answer === null && T) {
       const pc = await ocrPerChar(page, T, att)
       if (pc) { answer = pc.answer; raw = pc.raw; method = pc.method
@@ -392,7 +537,8 @@ async function main() {
 
   if (ok) {
     console.log('\n→ رفتن به صفحه عملیات...')
-    await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 60000 })
+    const tOk = await gotoResilient(page, TARGET_URL, '\u0635\u0641\u062d\u0647 \u0639\u0645\u0644\u06cc\u0627\u062a', 20)
+    if (!tOk) { console.log('   \u274c \u0635\u0641\u062d\u0647 \u0639\u0645\u0644\u06cc\u0627\u062a \u0628\u0627\u0632 \u0646\u0634\u062f'); await page.waitForTimeout(60000); await browser.close(); return }
     await page.waitForTimeout(2500)
     await page.evaluate(() => { const l = document.getElementById('loading'); if (l) l.remove() }).catch(() => {})
     console.log('   URL: ' + page.url())

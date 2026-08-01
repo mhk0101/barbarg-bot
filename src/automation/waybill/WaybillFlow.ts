@@ -71,6 +71,10 @@ export class WaybillFlow {
     data: WaybillData,
     opts?: { onStep?: (name: string, ok: boolean, error?: unknown) => Promise<void> | void },
   ): Promise<boolean> {
+    // ویزارد واقعی سایت ۱۰ گام دارد:
+    //  1 فرستنده | 2 گیرنده | 3 راننده و خودرو | 4 کالا | 5 مبدا بارگیری
+    //  6 مقصد تخلیه | 7 مشخصات مبدا/مقصد | 8 کرایه و صدور | 9 تایید | 10 رسید
+    // گام‌های ۵ تا ۱۰ پس از دریافت HTML آن‌ها تکمیل می‌شوند.
     const steps: Array<[string, () => Promise<void>]> = [
       ['فرستنده', () => this.fillStep1Sender(data)],
       ['گیرنده', () => this.fillStep2Receiver(data)],
@@ -93,36 +97,87 @@ export class WaybillFlow {
     return true
   }
 
+  /**
+   * گام ۱ — مشخصات فرستنده  (tab: #pills-1)
+   *
+   * سلکتورهای واقعی سایت:
+   *   #senderSelectType     select  →  "1" حقیقی | "2" حقوقی
+   *   #txtSenderOfficeName  نام شرکت      (فقط حقوقی — والدش کلاس hidden دارد)
+   *   #txtSenderFirstName   نام
+   *   #txtSenderLastName    نام خانوادگی
+   *   #txtSenderMobile      موبایل (اجباری، ماسک 999-99999999)
+   *   #txtSenderNationalCode شناسه/کد ملی
+   *   #txtSenderTell        تلفن
+   *   #txtSenderPostalCode  کدپستی
+   *   #btnGoLVL2            دکمه «مرحله بعد»
+   *
+   * نکته: انتخاب نوع فرستنده با جاوااسکریپت فیلدهای مربوطه را
+   * نمایش/مخفی می‌کند، پس باید بعد از select صبر کنیم.
+   */
   private async fillStep1Sender(data: WaybillData): Promise<void> {
-    if (data.senderType) {
-      await this.selectDropdown(['#SenderType', '[name="SenderType"]'], data.senderType)
-    }
-    await this.fillFields([
-      { selectors: ['#SenderNationalId', '#senderNationalId', '[name="SenderNationalId"]'], value: data.senderNationalId },
-      { selectors: ['#SenderMobile', '#senderMobile', '[name="SenderMobile"]'], value: data.senderMobile },
-      { selectors: ['#SenderFirstName', '#senderFirstName', '[name="SenderFirstName"]'], value: data.senderFirstName },
-      { selectors: ['#SenderLastName', '#senderLastName', '[name="SenderLastName"]'], value: data.senderLastName },
-      { selectors: ['#SenderPhone', '#senderPhone', '[name="SenderPhone"]'], value: data.senderPhone || '' },
-      { selectors: ['#SenderPostalCode', '#senderPostalCode', '[name="SenderPostalCode"]'], value: data.senderPostalCode || '' },
+    await this.waitForPageReady()
+
+    const bad = this.validatePerson('فرستنده', {
+      firstName: data.senderFirstName, lastName: data.senderLastName,
+      mobile: data.senderMobile, nationalId: data.senderNationalId,
+      phone: data.senderPhone, postalCode: data.senderPostalCode,
+    })
+    if (bad.length) throw new Error(`داده‌ی فرستنده نامعتبر است — ${bad.join(' | ')}`)
+
+    // نوع فرستنده: همیشه «حقیقی» (value=1)
+    await this.selectPersonType('#senderSelectType', '1', ['senderName', 'senderLastName'])
+
+    await this.fillVisibleFields([
+      { selectors: ['#txtSenderFirstName'], value: data.senderFirstName || '' },
+      { selectors: ['#txtSenderLastName'], value: data.senderLastName || '' },
+      { selectors: ['#txtSenderMobile'], value: data.senderMobile || '' },
+      { selectors: ['#txtSenderNationalCode'], value: data.senderNationalId || '' },
+      { selectors: ['#txtSenderTell'], value: data.senderPhone || '' },
+      { selectors: ['#txtSenderPostalCode'], value: data.senderPostalCode || '' },
     ])
-    await this.clickNext()
-    await this.page.waitForTimeout(1500)
+
+    await this.clickStepNext('#btnGoLVL2', '#pills-2-tab')
+    await this.waitForTabActive('pills-2')
   }
 
+  /**
+   * گام ۲ — مشخصات گیرنده  (tab: #pills-2)
+   *
+   * سلکتورهای واقعی سایت:
+   *   #receiverSelectType      select  →  "1" حقیقی | "2" حقوقی   (همیشه ۱)
+   *   #txtReceiverOfficeName   نام شرکت (فقط حقوقی — والد #receiverOfficeName)
+   *   #txtReceiverFirstName    نام            (والد #receiverName  — hidden)
+   *   #txtReceiverLastName     نام خانوادگی   (والد #receiverLastName — hidden)
+   *   #txtReceiverMobile       موبایل (اجباری، ماسک 9999-9999999)
+   *   #txtReceiverNationalCode شناسه/کد ملی
+   *   #txtReceiverTell         تلفن
+   *   #txtReceiverPostalCode   کدپستی
+   *   #btnGoLVL3               دکمه «مرحله بعد»
+   */
   private async fillStep2Receiver(data: WaybillData): Promise<void> {
-    if (data.receiverType) {
-      await this.selectDropdown(['#ReceiverType', '[name="ReceiverType"]'], data.receiverType)
-    }
-    await this.fillFields([
-      { selectors: ['#ReceiverNationalId', '#receiverNationalId', '[name="ReceiverNationalId"]'], value: data.receiverNationalId },
-      { selectors: ['#ReceiverMobile', '#receiverMobile', '[name="ReceiverMobile"]'], value: data.receiverMobile },
-      { selectors: ['#ReceiverFirstName', '#receiverFirstName', '[name="ReceiverFirstName"]'], value: data.receiverFirstName },
-      { selectors: ['#ReceiverLastName', '#receiverLastName', '[name="ReceiverLastName"]'], value: data.receiverLastName },
-      { selectors: ['#ReceiverPhone', '#receiverPhone', '[name="ReceiverPhone"]'], value: data.receiverPhone || '' },
-      { selectors: ['#ReceiverPostalCode', '#receiverPostalCode', '[name="ReceiverPostalCode"]'], value: data.receiverPostalCode || '' },
+    await this.waitForPageReady()
+
+    const bad = this.validatePerson('گیرنده', {
+      firstName: data.receiverFirstName, lastName: data.receiverLastName,
+      mobile: data.receiverMobile, nationalId: data.receiverNationalId,
+      phone: data.receiverPhone, postalCode: data.receiverPostalCode,
+    })
+    if (bad.length) throw new Error(`داده‌ی گیرنده نامعتبر است — ${bad.join(' | ')}`)
+
+    // نوع گیرنده: همیشه «حقیقی» (value=1)
+    await this.selectPersonType('#receiverSelectType', '1', ['receiverName', 'receiverLastName'])
+
+    await this.fillVisibleFields([
+      { selectors: ['#txtReceiverFirstName'], value: data.receiverFirstName || '' },
+      { selectors: ['#txtReceiverLastName'], value: data.receiverLastName || '' },
+      { selectors: ['#txtReceiverMobile'], value: data.receiverMobile || '' },
+      { selectors: ['#txtReceiverNationalCode'], value: data.receiverNationalId || '' },
+      { selectors: ['#txtReceiverTell'], value: data.receiverPhone || '' },
+      { selectors: ['#txtReceiverPostalCode'], value: data.receiverPostalCode || '' },
     ])
-    await this.clickNext()
-    await this.page.waitForTimeout(1500)
+
+    await this.clickStepNext('#btnGoLVL3', '#pills-3-tab')
+    await this.waitForTabActive('pills-3')
   }
 
   private async fillStep3VehicleDriver(data: WaybillData): Promise<void> {
@@ -474,6 +529,304 @@ export class WaybillFlow {
     } catch {
       return 'info'
     }
+  }
+
+  /* ---------------- کمک‌کننده‌های مخصوص فرم بارنامه ---------------- */
+
+  /** آیا عنصر واقعاً روی صفحه دیده می‌شود؟ (والد hidden هم بررسی می‌شود) */
+
+  /* ---------------- اعتبارسنجی داده پیش از ارسال ---------------- */
+
+  /** قاعده‌ی رایج کد پستی ایران */
+  private static checkPostal(v?: string): string | null {
+    if (!v) return null
+    const s = String(v).replace(/\D/g, '')
+    if (s.length !== 10) return `کدپستی باید ۱۰ رقم باشد (مقدار: ${v})`
+    if (/^(\d)\1{9}$/.test(s)) return `کدپستی نامعتبر (همه ارقام یکسان): ${v}`
+    if (!/^[13-9]{4}[1346-9][013-9]{5}$/.test(s)) return `کدپستی با الگوی مجاز نمی‌خواند: ${v}`
+    return null
+  }
+
+  /** کد ملی ۱۰ رقمی با رقم کنترلی (یا شناسه‌ی حقوقی ۱۱ رقمی) */
+  private static checkNationalCode(v?: string): string | null {
+    if (!v) return null
+    const s = String(v).replace(/\D/g, '')
+    if (s.length === 11 && s.startsWith('10')) return null
+    if (s.length !== 10) return `کد ملی باید ۱۰ رقم باشد (مقدار: ${v})`
+    if (/^(\d)\1{9}$/.test(s)) return `کد ملی نامعتبر (همه ارقام یکسان): ${v}`
+    let sum = 0
+    for (let i = 0; i < 9; i++) sum += parseInt(s[i], 10) * (10 - i)
+    const r = sum % 11
+    const expect = r < 2 ? r : 11 - r
+    if (parseInt(s[9], 10) !== expect) return `رقم کنترلی کد ملی اشتباه است (مقدار: ${v})`
+    return null
+  }
+
+  private static checkMobile(v?: string): string | null {
+    if (!v) return 'شماره موبایل اجباری است'
+    const s = String(v).replace(/\D/g, '')
+    if (s.length !== 11) return `موبایل باید ۱۱ رقم باشد (مقدار: ${v})`
+    if (!s.startsWith('09')) return `موبایل باید با ۰۹ شروع شود (مقدار: ${v})`
+    return null
+  }
+
+  private static checkTell(v?: string): string | null {
+    if (!v) return null
+    const s = String(v).replace(/\D/g, '')
+    if (s.length < 8 || s.length > 11) return `طول شماره تلفن نامعتبر (مقدار: ${v})`
+    if (!s.startsWith('0')) return `تلفن باید با ۰ شروع شود (مقدار: ${v})`
+    return null
+  }
+
+  /**
+   * داده‌ی یک شخص را قبل از تایپ بررسی می‌کند تا خطاها زودتر و
+   * با پیام روشن گزارش شوند (به‌جای شکست مبهم در «مرحله بعد»).
+   */
+  private validatePerson(
+    who: string,
+    p: { firstName?: string; lastName?: string; mobile?: string; nationalId?: string; phone?: string; postalCode?: string },
+  ): string[] {
+    const errs: string[] = []
+    if (!p.firstName) errs.push(`${who}: نام اجباری است`)
+    if (!p.lastName) errs.push(`${who}: نام خانوادگی اجباری است`)
+    const m = WaybillFlow.checkMobile(p.mobile); if (m) errs.push(`${who}: ${m}`)
+    const n = WaybillFlow.checkNationalCode(p.nationalId); if (n) errs.push(`${who}: ${n}`)
+    const t = WaybillFlow.checkTell(p.phone); if (t) errs.push(`${who}: ${t}`)
+    const c = WaybillFlow.checkPostal(p.postalCode); if (c) errs.push(`${who}: ${c}`)
+    return errs
+  }
+
+  /** خطاهای اعتبارسنجی زنده‌ی خود سایت را می‌خواند */
+  private async readFieldErrors(): Promise<string[]> {
+    return await this.page.evaluate(() => {
+      const out: string[] = []
+      document.querySelectorAll('small.help-block').forEach((el) => {
+        const he = el as HTMLElement
+        const invalid = he.getAttribute('data-fv-result') === 'INVALID'
+        if (!invalid && he.offsetParent === null) return
+        const t = (he.innerText || '').trim()
+        if (!t) return
+        const f = he.getAttribute('data-fv-for') || ''
+        out.push(f ? `${f}: ${t}` : t)
+      })
+      return Array.from(new Set(out)).slice(0, 8)
+    }).catch(() => [] as string[])
+  }
+
+  private async isVisible(selector: string): Promise<boolean> {
+    try {
+      return await this.page.evaluate((sel) => {
+        const el = document.querySelector(sel) as HTMLElement | null
+        if (!el) return false
+        // والدهای با کلاس hidden / d-none / display:none
+        let n: HTMLElement | null = el
+        while (n) {
+          const s = getComputedStyle(n)
+          if (s.display === 'none' || s.visibility === 'hidden') return false
+          if (n.classList.contains('hidden') || n.classList.contains('d-none')) return false
+          n = n.parentElement
+        }
+        const r = el.getBoundingClientRect()
+        return r.width > 0 && r.height > 0
+      }, selector)
+    } catch { return false }
+  }
+
+  /**
+   * انتخاب «نوع شخص» (حقیقی/حقوقی) و اطمینان از نمایان شدن فیلدهای وابسته.
+   *
+   * سایت این بخش‌ها را با کلاس `hidden` پنهان می‌کند و فقط با رویداد
+   * change جی‌کوئری بازشان می‌کند. اگر آن اسکریپت اجرا نشود، فیلدها
+   * مخفی می‌مانند و پر نمی‌شوند؛ پس در صورت نیاز خودمان بازشان می‌کنیم.
+   *
+   * @param selector    سلکتور المان select
+   * @param value       "1" حقیقی | "2" حقوقی
+   * @param wrapperIds  آیدی div‌هایی که باید نمایان شوند
+   */
+  private async selectPersonType(
+    selector: string,
+    value: string,
+    wrapperIds: string[],
+  ): Promise<void> {
+    await this.selectByValue(selector, value)
+    // تغییر نوع، فیلدها را نمایش/مخفی می‌کند
+    await this.page.waitForTimeout(450)
+
+    // اگر اسکریپت سایت کلاس hidden را برنداشت، دستی برمی‌داریم
+    await this.page.evaluate((ids) => {
+      for (const id of ids) {
+        const el = document.getElementById(id)
+        if (el) {
+          el.classList.remove('hidden')
+          el.classList.remove('d-none')
+        }
+      }
+    }, wrapperIds).catch(() => { /* ignore */ })
+    await this.page.waitForTimeout(150)
+  }
+
+  /** انتخاب گزینه از select بر اساس value، همراه با رویدادهای لازم */
+  private async selectByValue(selector: string, value: string): Promise<boolean> {
+    try {
+      const el = await this.page.$(selector)
+      if (!el) return false
+      try {
+        await el.selectOption(value)
+      } catch {
+        await this.page.evaluate(
+          ({ sel, val }) => {
+            const s = document.querySelector(sel) as HTMLSelectElement | null
+            if (!s) return
+            s.value = val
+            s.dispatchEvent(new Event('change', { bubbles: true }))
+            s.dispatchEvent(new Event('input', { bubbles: true }))
+          },
+          { sel: selector, val: value },
+        )
+      }
+      // برخی فرم‌ها به jQuery change وابسته‌اند
+      await this.page.evaluate(
+        ({ sel }) => {
+          const w = window as unknown as { jQuery?: (s: string) => { trigger: (e: string) => void } }
+          if (w.jQuery) { try { w.jQuery(sel).trigger('change') } catch { /* ignore */ } }
+        },
+        { sel: selector },
+      ).catch(() => {})
+      return true
+    } catch { return false }
+  }
+
+  /**
+   * فقط فیلدهای قابل‌مشاهده را پر می‌کند و مقدار را تأیید می‌کند.
+   * فیلدهای ماسک‌دار (مثل موبایل) با تایپ کاراکتری پر می‌شوند.
+   */
+  private async fillVisibleFields(fields: Array<{ selectors: string[]; value: string }>): Promise<void> {
+    for (const f of fields) {
+      if (!f.value) continue
+      for (const sel of f.selectors) {
+        const el = await this.page.$(sel)
+        if (!el) continue
+
+        // اگر مخفی است، والدهای پنهان‌کننده را باز کن و دوباره بررسی کن
+        if (!(await this.isVisible(sel))) {
+          await this.page.evaluate((s) => {
+            let n = document.querySelector(s) as HTMLElement | null
+            while (n) {
+              n.classList?.remove('hidden')
+              n.classList?.remove('d-none')
+              if (n.style && n.style.display === 'none') n.style.display = ''
+              n = n.parentElement
+            }
+          }, sel).catch(() => { /* ignore */ })
+          await this.page.waitForTimeout(80)
+          if (!(await this.isVisible(sel))) break // واقعاً مخفی است، رد شو
+        }
+
+        try {
+          await el.click({ clickCount: 3 }).catch(() => {})
+          await el.fill('')
+          await this.page.waitForTimeout(20 + Math.random() * 40)
+          // تایپ کاراکتری تا ماسک‌های jQuery درست کار کنند
+          await el.type(f.value, { delay: 10 + Math.random() * 15 })
+          // رویدادهای اعتبارسنجی سایت (FormValidation روی blur/change گوش می‌دهد)
+          await this.page.evaluate((s) => {
+            const i = document.querySelector(s) as HTMLInputElement | null
+            if (!i) return
+            i.dispatchEvent(new Event('input', { bubbles: true }))
+            i.dispatchEvent(new Event('change', { bubbles: true }))
+            i.dispatchEvent(new Event('blur', { bubbles: true }))
+            const w = window as unknown as { jQuery?: (el: unknown) => { trigger: (e: string) => unknown } }
+            if (w.jQuery) { try { w.jQuery(i).trigger('change'); w.jQuery(i).trigger('blur') } catch { /* ignore */ } }
+          }, sel).catch(() => { /* ignore */ })
+        } catch {
+          try { await el.fill(f.value) } catch { /* ignore */ }
+        }
+
+        // تأیید مقدار؛ اگر ماسک تغییرش داده، ارقام را مقایسه می‌کنیم
+        try {
+          const actual = await this.page.evaluate((s) => {
+            const i = document.querySelector(s) as HTMLInputElement | null
+            return i ? i.value : ''
+          }, sel)
+          const onlyDigits = (v: string) => v.replace(/\D/g, '')
+          const ok = actual === f.value ||
+            (/^\d+$/.test(f.value) && onlyDigits(actual) === f.value)
+          if (!ok && actual.trim() === '') {
+            await this.page.evaluate(
+              ({ s, v }) => {
+                const i = document.querySelector(s) as HTMLInputElement | null
+                if (i) {
+                  i.value = v
+                  i.dispatchEvent(new Event('input', { bubbles: true }))
+                  i.dispatchEvent(new Event('change', { bubbles: true }))
+                  i.dispatchEvent(new Event('blur', { bubbles: true }))
+                }
+              },
+              { s: sel, v: f.value },
+            )
+          }
+        } catch { /* ignore */ }
+
+        break
+      }
+    }
+  }
+
+  /** کلیک دکمه‌ی «مرحله بعد» با پشتیبانی از دکمه‌ی پنهانِ ناوبری تب */
+  private async clickStepNext(primarySelector: string, fallbackTabSelector?: string): Promise<void> {
+    const btn = await this.page.$(primarySelector)
+    if (btn) {
+      await btn.click().catch(async () => {
+        await this.page.evaluate((s) => {
+          (document.querySelector(s) as HTMLElement | null)?.click()
+        }, primarySelector)
+      })
+      await this.page.waitForTimeout(1200)
+      return
+    }
+    if (fallbackTabSelector) {
+      await this.page.evaluate((s) => {
+        (document.querySelector(s) as HTMLElement | null)?.click()
+      }, fallbackTabSelector).catch(() => {})
+      await this.page.waitForTimeout(1200)
+      return
+    }
+    await this.clickNext()
+  }
+
+  /**
+   * صبر می‌کند تا تب موردنظر فعال شود.
+   * اگر فعال نشد یعنی اعتبارسنجی سایت جلوی رفتن به گام بعد را گرفته —
+   * در این حالت پیام خطا را می‌خوانیم و throw می‌کنیم.
+   */
+  private async waitForTabActive(tabPaneId: string, timeoutMs = 12000): Promise<void> {
+    const start = Date.now()
+    while (Date.now() - start < timeoutMs) {
+      const active = await this.page.evaluate((id) => {
+        const p = document.getElementById(id)
+        return !!(p && p.classList.contains('active') && p.classList.contains('show'))
+      }, tabPaneId).catch(() => false)
+      if (active) { await this.page.waitForTimeout(500); return }
+      await this.page.waitForTimeout(400)
+    }
+
+    // نرفت جلو → دلیلش را پیدا کن (با نام فیلد)
+    const errs = await this.readFieldErrors()
+    const extra = await this.page.evaluate(() => {
+      const out: string[] = []
+      document.querySelectorAll('.alert-danger, .validation-summary-errors').forEach((el) => {
+        const t = (el as HTMLElement).innerText.trim()
+        if (t) out.push(t)
+      })
+      return out.slice(0, 3)
+    }).catch(() => [] as string[])
+    errs.push(...extra)
+
+    throw new Error(
+      errs.length
+        ? `اعتبارسنجی سایت اجازه‌ی رفتن به گام بعد را نداد: ${errs.join(' | ')}`
+        : `گام بعدی (${tabPaneId}) باز نشد`,
+    )
   }
 
   private async fillFields(fields: Array<{ selectors: string[]; value: string }>): Promise<void> {
