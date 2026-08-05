@@ -36,13 +36,23 @@ export interface WaybillData {
 
   cargoName: string
   cargoPackaging?: string
+  /** وزن به تن */
   cargoWeight?: string
+  /** تعداد بسته */
   cargoQuantity?: string
+  /** ارزش تقریبی بار (ریال) */
+  cargoValue?: string
 
   originProvince?: string
   originCity?: string
+  originAddress?: string
+  originPostalCode?: string
   destProvince?: string
   destCity?: string
+  destAddress?: string
+  destPostalCode?: string
+  /** ساعت شروع حمل، مثل 23:07 */
+  loadingTime?: string
 
   advanceFare?: string
   fareType?: string

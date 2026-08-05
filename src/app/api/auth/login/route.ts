@@ -1,6 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { login, logout } from '@/lib/auth/authService'
 
+/**
+ * پاک کردن کوکی‌های احراز هویت.
+ *
+ * مهم: کوکی با path:'/' ست شده، پس پاک کردنش هم باید همان path
+ * را داشته باشد، وگرنه مرورگر کوکی را نگه می‌دارد.
+ * علاوه بر delete، مقدار خالی با maxAge:0 هم می‌گذاریم (کمربند و ساسپاند).
+ */
+function clearAuthCookies(response: NextResponse) {
+  const isProd = process.env.NODE_ENV === 'production'
+  for (const name of ['access_token', 'refresh_token']) {
+    response.cookies.delete({ name, path: '/' })
+    response.cookies.set(name, '', {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: 'lax',
+      maxAge: 0,
+      expires: new Date(0),
+      path: '/',
+    })
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -32,13 +54,11 @@ export async function DELETE(request: NextRequest) {
       if (payload) await logout(payload.userId)
     }
     const response = NextResponse.json({ success: true })
-    response.cookies.delete('access_token')
-    response.cookies.delete('refresh_token')
+    clearAuthCookies(response)
     return response
   } catch {
     const response = NextResponse.json({ success: true })
-    response.cookies.delete('access_token')
-    response.cookies.delete('refresh_token')
+    clearAuthCookies(response)
     return response
   }
 }

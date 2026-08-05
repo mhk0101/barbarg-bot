@@ -29,32 +29,61 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     const body = await request.json()
     const updateData: Record<string, unknown> = {}
 
-    const fields = [
-      'name', 'senderType', 'senderFirstName', 'senderLastName', 'senderMobile',
-      'senderPhone', 'senderNationalId', 'senderPostalCode',
-      'receiverType', 'receiverFirstName', 'receiverLastName', 'receiverMobile',
-      'receiverPhone', 'receiverNationalId', 'receiverPostalCode',
-      'plateNumber', 'vehicleSerialNumber', 'vehicleMotorNumber',
+    // فیلدهای متنی که می‌توانند null باشند
+    const textFields = [
+      'senderType', 'senderPhone', 'senderPostalCode',
+      'receiverType', 'receiverPhone', 'receiverPostalCode',
+      'vehicleSerialNumber', 'vehicleMotorNumber',
       'vehicleInsurancePage', 'vehicleSparePlate', 'vehicleType',
       'cargoCapacity', 'passengerCapacity', 'loaderType',
       'thirdPartyInsurance', 'activityLicense',
-      'driverName', 'driverNationalId', 'driverMobile',
-      'driverLicense', 'driverCard', 'driverIdNumber', 'driverGender',
-      'accountId', 'cargoName', 'cargoCategory', 'cargoPackaging',
-      'cargoWeight', 'cargoQuantity', 'cargoValue',
-      'originProvince', 'originCity', 'originAddress', 'originPostalCode',
-      'destProvince', 'destCity', 'destAddress', 'destPostalCode',
+      'driverMobile', 'driverLicense', 'driverCard', 'driverIdNumber', 'driverGender',
+      'cargoCategory', 'cargoPackaging', 'cargoWeight', 'cargoQuantity', 'cargoValue',
+      'originAddress', 'originPostalCode', 'destAddress', 'destPostalCode',
       'advanceFare', 'fareType', 'freightCost', 'transportInsurance',
       'totalAmount', 'insuranceRate', 'insuranceAmount', 'paymentMethod',
-      'captchaAnswer',
-      'registrationsPerDay', 'intervalMinutes', 'maxRetries', 'retryIntervalSec',
-      'priority', 'status', 'notes',
+      'captchaAnswer', 'notes',
     ]
 
-    for (const field of fields) {
+    // فیلدهای متنی اجباری (در اسکیما nullable نیستند)
+    const requiredText = [
+      'name', 'senderFirstName', 'senderLastName', 'senderMobile', 'senderNationalId',
+      'receiverFirstName', 'receiverLastName', 'receiverMobile', 'receiverNationalId',
+      'plateNumber', 'driverName', 'driverNationalId', 'cargoName',
+      'originProvince', 'originCity', 'destProvince', 'destCity', 'status',
+    ]
+
+    // فیلدهای عددی (نباید null شوند)
+    const numberFields: Array<[string, number]> = [
+      ['registrationsPerDay', 10], ['intervalMinutes', 60],
+      ['maxRetries', 3], ['retryIntervalSec', 30], ['priority', 0],
+    ]
+
+    for (const field of textFields) {
       if (body[field] !== undefined) {
-        updateData[field] = body[field] || null
+        const v = body[field]
+        updateData[field] = v === '' || v === null ? null : v
       }
+    }
+
+    for (const field of requiredText) {
+      if (body[field] !== undefined && String(body[field] ?? '').trim() !== '') {
+        updateData[field] = body[field]
+      }
+    }
+
+    for (const [field, fallback] of numberFields) {
+      if (body[field] !== undefined) {
+        const n = Number(body[field])
+        updateData[field] = Number.isFinite(n) ? n : fallback
+      }
+    }
+
+    // accountId یک کلید خارجی است؛ Prisma فقط از طریق رابطه می‌پذیرد
+    if (body.accountId !== undefined) {
+      updateData.barbargAccount = body.accountId
+        ? { connect: { id: body.accountId } }
+        : { disconnect: true }
     }
 
     const item = await prisma.registrationProfile.update({

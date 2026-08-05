@@ -1,12 +1,30 @@
+/**
+ * worker/processor.ts — پردازشگر وظایف تب «اتوماسیون ← مرکز کنترل»
+ * ═══════════════════════════════════════════════════════════════════
+ *  این فایل دیگر منطق مخصوص به خودش ندارد.
+ *  کل کار به src/automation/engine/step1-engine.js سپرده می‌شود —
+ *  همان کدی که `node test-step1.js` اجرا می‌کند.
+ *  پس هر چیزی که در تستر کار می‌کند، اینجا هم دقیقا همان‌طور کار می‌کند.
+ * ═══════════════════════════════════════════════════════════════════
+ */
 import { PrismaClient } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
-import { browserManager } from '../src/automation/browser/BrowserManager'
-import { loginFlow } from '../src/automation/auth/LoginFlow'
-import { WaybillFlow } from '../src/automation/waybill/WaybillFlow'
-import type { WaybillData } from '../src/automation/interfaces'
-import path from 'path'
-import fs from 'fs'
 import crypto from 'crypto'
+
+/**
+ * موتور مشترک با test-step1.js — به‌صورت پویا بارگذاری می‌شود تا هم در
+ * حالت ESM و هم CommonJS (tsx / next) بدون مشکل کار کند.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let engine: any = null
+async function getEngine() {
+  if (engine) return engine
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mod: any = await import('../src/automation/engine/step1-engine.js')
+  engine = mod?.runWaybill ? mod : (mod?.default ?? mod)
+  if (!engine?.runWaybill) throw new Error('موتور ثبت بارنامه بارگذاری نشد (step1-engine.js)')
+  return engine
+}
 
 function decryptPassword(encrypted: string): string {
   const ALGORITHM = 'aes-256-cbc'
@@ -22,243 +40,249 @@ function decryptPassword(encrypted: string): string {
 
 const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL! }) })
 
+/** آیا موتور باید دکمه‌ی «ثبت نهایی سند حمل» را واقعا بزند؟ */
+const DO_SUBMIT = process.env.BARBARG_SUBMIT !== 'false'   // پیش‌فرض: ثبت واقعی
+/** مرورگر دیده شود یا نه (مثل تستر پیش‌فرض دیده می‌شود) */
+const HEADLESS = process.env.BARBARG_HEADLESS === 'true'
+
+/** خطاهایی که تکرارشان بی‌فایده است */
+const PERMANENT = /مختصات انتخابی نامعتبر|کد ملی|کدملی|شناسه ملی|اعتبار کافی|موجودی|تکراری|مجوز|دسترسی ندارید|رمز|کلمه عبور|کاربری یافت نشد|قفل|مسدود|غیرفعال/
+
+/** سقف شروع مجدد داخل موتور (بلاک IP / سرور مشغول / WAF) */
+const MAX_RESTARTS = Number(process.env.BARBARG_MAX_RESTARTS || 20)
+
+/**
+ * ساخت اعلان برای زنگوله‌ی پنل.
+ * فقط رویدادهای مهم — نه هر خطای کوچکی.
+ */
+async function notify(title: string, message: string, type: 'info' | 'success' | 'warning' | 'error') {
+  await prisma.notification.create({
+    data: { title, message: message.slice(0, 300), type },
+  }).catch(() => {})
+}
+
 export async function processWaybillJob(taskId: string): Promise<void> {
   const task = await prisma.job.findUnique({ where: { id: taskId } })
   if (!task) return
+
+  /* ممکن است کاربر در فاصله‌ی صف تا اجرا، وظیفه را لغو کرده باشد. */
+  if (task.status === 'cancelled') {
+    console.log(`[Worker] Job ${taskId} لغو شده بود — اجرا نمی‌شود`)
+    await log(taskId, 'warn', 'وظیفه لغو شده بود — اجرا نشد')
+    return
+  }
+  if (task.status === 'completed') {
+    console.log(`[Worker] Job ${taskId} قبلا تمام شده — رد می‌شود`)
+    return
+  }
 
   await prisma.job.update({ where: { id: taskId }, data: { status: 'processing', startedAt: new Date() } })
   await log(taskId, 'info', 'شروع پردازش وظیفه')
 
   const automationResult = await prisma.automationResult.create({
-    data: {
-      taskId,
-      status: 'running',
-      startedAt: new Date(),
-      retryCount: task.attempts,
-    },
+    data: { taskId, status: 'running', startedAt: new Date(), retryCount: task.attempts },
   })
 
   const startedAt = Date.now()
 
   try {
-    const job = await prisma.job.findUnique({ where: { id: taskId }, include: { profile: { include: { barbargAccount: true } } } })
-    const accountId = job?.profile?.barbargAccount?.id || (task as Record<string, unknown>).accountId as string || 'default'
+    const engine = await getEngine()
 
-    await log(taskId, 'info', 'بارگذاری اطلاعات حساب از پایگاه داده...')
-    let account = await prisma.barBargAccount.findUnique({ where: { id: accountId } })
-    if (!account) {
-      account = await prisma.barBargAccount.findFirst({ where: { status: 'active' } })
-    }
-    if (!account) {
-      await log(taskId, 'error', 'حساب یافت نشد')
-      await failJobAndResult(taskId, automationResult.id, 'حساب یافت نشد', 'error', startedAt)
+    // ─── ۱) پروفایل و حساب ───
+    const job = await prisma.job.findUnique({
+      where: { id: taskId },
+      include: { profile: { include: { barbargAccount: true } } },
+    })
+
+    const profile = job?.profile
+    if (!profile) {
+      const msg = 'پروفایل ثبت به این وظیفه وصل نیست — از صفحه «پروفایل‌ها» یک پروفایل بسازید و از «مرکز کنترل» دوباره به صف اضافه کنید'
+      await log(taskId, 'error', msg)
+      await failJobAndResult(taskId, automationResult.id, msg, 'error', startedAt)
       return
     }
 
-    // ------------------------------------------------------------------
-    // ورود تازه در هر اجرا.
-    // سشن این سایت عمر بسیار کوتاهی دارد و به IP هم حساس است، بنابراین
-    // به سشن ذخیره‌شده اتکا نمی‌کنیم: هر بار از صفر لاگین می‌کنیم،
-    // کپچا را حل می‌کنیم و مستقیم وارد صفحه‌ی عملیات می‌شویم.
-    // ------------------------------------------------------------------
-    await log(taskId, 'info', `حساب: ${account.username} | حالت: ورود تازه در هر اجرا`)
+    let account = profile.barbargAccount
+    if (!account) account = await prisma.barBargAccount.findFirst({ where: { status: 'active' } })
+    if (!account) {
+      const msg = 'هیچ حساب باربگ فعالی یافت نشد'
+      await log(taskId, 'error', msg)
+      await failJobAndResult(taskId, automationResult.id, msg, 'error', startedAt)
+      return
+    }
 
-    await browserManager.launch(false)
-    const page = await browserManager.createFreshPage(accountId)
-    if (!page) throw new Error('خطا در ایجاد صفحه')
+    await log(taskId, 'info', `پروفایل: ${profile.name} | پلاک: ${profile.plateNumber} | حساب: ${account.username}`)
 
-    const loginResult = await loginFlow.freshLogin(
-      page,
-      account.username,
-      decryptPassword(account.passwordEncrypted),
-      {
-        maxCaptchaAttempts: 5,
-        onStep: async (msg, level = 'info') => {
-          await log(taskId, level === 'warn' ? 'warn' : level, msg)
-        },
+    // ─── ۲) داده‌ی پروفایل → قالب موتور ───
+    const data = engine.profileToData(profile)
+    const missing: string[] = engine.validateData(data)
+    if (missing.length) {
+      const msg = `فیلدهای اجباری خالی‌اند: ${missing.join('، ')}`
+      await log(taskId, 'error', msg)
+      await failJobAndResult(taskId, automationResult.id, msg, 'error', startedAt)
+      return
+    }
+
+    await log(taskId, 'info',
+      `داده آماده — راننده ${data.driver.name} | کالا ${data.cargo.name} ${data.cargo.weightTon} تن | ` +
+      `${data.origin.city} ← ${data.destination.city}`)
+    await log(taskId, 'info', DO_SUBMIT ? 'حالت: ثبت واقعی' : 'حالت: آزمایشی (dry-run) — دکمه ثبت نهایی زده نمی‌شود')
+
+    // ─── ۳) اجرای موتور (همان test-step1.js) ───
+    const result = await engine.runWaybill({
+      credentials: { username: account.username, password: decryptPassword(account.passwordEncrypted) },
+      data,
+      submit: DO_SUBMIT,
+      headless: HEADLESS,
+      maxRestarts: MAX_RESTARTS,
+      onLog: (line: string) => {
+        const clean = String(line).replace(/^\s*\n/, '').trim()
+        if (!clean) return
+        const level = /✖|❌|🛑|خطا/.test(clean) ? 'error'
+                    : /⚠|↻/.test(clean) ? 'warn'
+                    : /✅|🎉|✔/.test(clean) ? 'success' : 'info'
+        void log(taskId, level, clean.slice(0, 500))
       },
-    )
+      onStep: async (n: number, ok: boolean, label: string) => {
+        await log(taskId, ok ? 'success' : 'error', `گام ${n} (${label}): ${ok ? 'موفق' : 'ناموفق'}`)
+      },
 
-    if (!loginResult.success) {
-      const screenshotDir = path.join(process.cwd(), 'automation-data', 'screenshots')
-      if (!fs.existsSync(screenshotDir)) fs.mkdirSync(screenshotDir, { recursive: true })
-      const screenshotPath = path.join(screenshotDir, `login-failed-${accountId}-${Date.now()}.png`)
-      try { await page.screenshot({ path: screenshotPath, fullPage: true }) } catch {}
+      /* اگر کاربر وسط کار از صف وظایف «لغو» بزند، موتور باید بایستد.
+         قبلا لغو فقط دیتابیس را عوض می‌کرد و موتور تا ساعت‌ها ادامه می‌داد. */
+      shouldStop: async () => {
+        const now = await prisma.job.findUnique({
+          where: { id: taskId },
+          select: { status: true },
+        }).catch(() => null)
+        if (now?.status === 'cancelled') {
+          await log(taskId, 'warn', 'درخواست لغو دریافت شد — متوقف می‌شویم')
+          return true
+        }
+        return false
+      },
+    })
 
-      await prisma.barBargAccount.update({
-        where: { id: account.id },
-        data: { lastError: loginResult.error || 'ورود ناموفق' },
-      }).catch(() => {})
-
-      await prisma.automationResult.update({
-        where: { id: automationResult.id },
-        data: {
-          status: 'failed',
-          accountId,
-          resultMessage: loginResult.error || 'ورود ناموفق',
-          resultType: 'error',
-          errorCode: 'LOGIN_FAILED',
-          screenshotPath,
-          currentUrl: page.url(),
-          finishedAt: new Date(),
-          duration: Date.now() - startedAt,
-        },
-      })
-
-      await log(taskId, 'error', `ورود ناموفق: ${loginResult.error} (تلاش کپچا: ${loginResult.captchaAttempts})`)
-      await prisma.job.update({
-        where: { id: taskId },
-        data: { status: 'failed', error: loginResult.error || 'ورود ناموفق', completedAt: new Date() },
-      })
-      await browserManager.closePage(accountId)
-      return
-    }
-
-    // نشست تازه را ذخیره کن (برای ابزارهای تشخیصی مفید است)
-    await browserManager.saveSession(accountId).catch(() => {})
     await prisma.barBargAccount.update({
       where: { id: account.id },
-      data: { lastLogin: new Date(), lastError: null },
+      data: { lastLogin: new Date(), lastError: result.success ? null : (result.error ?? null) },
     }).catch(() => {})
-    await log(taskId, 'success', `ورود موفق (کپچا در ${loginResult.captchaAttempts} تلاش)`)
 
-    await prisma.automationResult.update({
-      where: { id: automationResult.id },
-      data: { accountId, currentUrl: page.url() },
-    })
-
-    const flow = new WaybillFlow(page, accountId)
-
-    // freshLogin قبلاً ما را به صفحه‌ی عملیات رسانده است؛ فقط اگر
-    // به هر دلیلی جای دیگری بودیم، دوباره تلاش می‌کنیم.
-    if (!page.url().toLowerCase().includes('hagigihogugi')) {
-      await log(taskId, 'info', 'باز کردن فرم باربرگ...')
-      const navigated = await flow.navigateToCreate()
-      if (!navigated) throw new Error('خطا در باز کردن فرم')
-    } else {
-      await log(taskId, 'info', `فرم از قبل باز است: ${page.url()}`)
-    }
-
-    const waybillData = await resolveWaybillData(taskId)
-    if (!waybillData) throw new Error('داده باربرگ یافت نشد')
-
-    await log(taskId, 'info', 'پر کردن فرم...')
-    await prisma.automationResult.update({
-      where: { id: automationResult.id },
-      data: {
-        plate: waybillData.plateNumber,
-        driver: waybillData.driverName,
-        sender: `${waybillData.senderFirstName} ${waybillData.senderLastName}`,
-        receiver: `${waybillData.receiverFirstName} ${waybillData.receiverLastName}`,
-        currentUrl: page.url(),
-      },
-    })
-
-    const filled = await flow.fillForm(waybillData)
-    if (!filled) throw new Error('خطا در پر کردن فرم')
-
-    await delay(3000 + Math.random() * 5000)
-    await log(taskId, 'info', 'بررسی کپچا...')
-    const captchaResult = await flow.handleCaptcha()
-    if (captchaResult.needsManual) {
-      await log(taskId, 'warn', 'کپچا نیاز به حل دستی')
-      const screenshotPath = captchaResult.screenshotPath || await browserManager.screenshot(page, 'captcha-paused')
-      await prisma.automationResult.update({
-        where: { id: automationResult.id },
-        data: {
-          status: 'paused',
-          resultMessage: 'نیاز به حل دستی کپچا',
-          resultType: 'warning',
-          screenshotPath,
-          finishedAt: new Date(),
-          duration: Date.now() - startedAt,
-        },
-      })
-      await prisma.job.update({ where: { id: taskId }, data: { status: 'paused', error: 'نیاز به حل دستی کپچا' } })
-      return
-    }
-
-    await delay(3000 + Math.random() * 5000)
-    await log(taskId, 'info', 'ارسال فرم...')
-    const result = await flow.submit()
-
-    const screenshotPath = await browserManager.screenshot(page, `result-${taskId}`)
-    const htmlSnapshotPath = await browserManager.saveHtmlSnapshot(page, `result-${taskId}`)
-    const pageKey = browserManager.getPageKeyForPage(page)
-    const rawLog = pageKey ? browserManager.capturePageLog(pageKey) : browserManager.capturePlaywrightLog(page)
-    const playwrightLog = JSON.parse(JSON.stringify(rawLog))
-
+    // ─── ۴) ثبت نتیجه ───
     if (result.success) {
-      await browserManager.saveSession(accountId)
-      await log(taskId, 'success', `ثبت موفق - ${result.resultMessage}`)
+      const message = result.trackingCode
+        ? `ثبت شد — کد رهگیری ${result.trackingCode}`
+        : 'همه گام‌ها موفق (حالت آزمایشی — ثبت نهایی انجام نشد)'
+
+      await log(taskId, 'success', message)
       await prisma.job.update({
         where: { id: taskId },
-        data: { status: 'completed', result: result.trackingCode || result.resultMessage, completedAt: new Date() },
+        data: { status: 'completed', result: result.trackingCode || message, completedAt: new Date() },
       })
       await prisma.automationResult.update({
         where: { id: automationResult.id },
         data: {
           status: 'completed',
-          resultMessage: result.resultMessage,
+          resultMessage: message,
           resultType: 'success',
-          waybillNumber: result.trackingCode,
-          screenshotPath,
-          htmlSnapshotPath,
-          playwrightLog,
-          currentUrl: page.url(),
+          waybillNumber: result.trackingCode ?? undefined,
           finishedAt: new Date(),
           duration: Date.now() - startedAt,
         },
       })
-      await prisma.activityLog.create({ data: { action: 'task_completed', resource: 'automation', resourceId: taskId } })
-    } else {
+      await prisma.registrationProfile.update({
+        where: { id: profile.id },
+        data: {
+          lastRun: new Date(),
+          totalRuns: { increment: 1 },
+          successfulRuns: { increment: 1 },
+          lastError: null,
+        },
+      }).catch(() => {})
+      await prisma.activityLog.create({
+        data: { action: 'task_completed', resource: 'automation', resourceId: taskId },
+      }).catch(() => {})
+
+      if (result.trackingCode) {
+        await notify(
+          'بارنامه ثبت شد',
+          `پلاک ${profile.plateNumber} — کد رهگیری ${result.trackingCode}`,
+          'success',
+        )
+      }
+      return
+    }
+
+    // ─── لغو شده توسط کاربر ───
+    if (result.kind === 'stopped') {
+      await log(taskId, 'warn', 'وظیفه توسط کاربر لغو شد')
+      await prisma.job.update({
+        where: { id: taskId },
+        data: { status: 'cancelled', error: 'توسط کاربر لغو شد', completedAt: new Date() },
+      }).catch(() => {})
       await prisma.automationResult.update({
         where: { id: automationResult.id },
         data: {
-          status: 'failed',
-          resultMessage: result.resultMessage,
-          resultType: result.resultType,
-          errorCode: 'SUBMISSION_FAILED',
-          screenshotPath,
-          htmlSnapshotPath,
-          playwrightLog,
-          currentUrl: page.url(),
-          finishedAt: new Date(),
-          duration: Date.now() - startedAt,
+          status: 'cancelled', resultMessage: 'توسط کاربر لغو شد', resultType: 'warning',
+          finishedAt: new Date(), duration: Date.now() - startedAt,
         },
-      })
-
-      if (task.attempts < task.maxRetries) {
-        await retryTask(taskId, automationResult.id, result.resultMessage)
-      } else {
-        await prisma.job.update({ where: { id: taskId }, data: { status: 'failed', error: result.resultMessage, completedAt: new Date() } })
-        await createErrorLog(taskId, result.resultMessage, screenshotPath)
-        await prisma.activityLog.create({ data: { action: 'task_failed', resource: 'automation', resourceId: taskId, details: { error: result.resultMessage } } })
-      }
+      }).catch(() => {})
+      return
     }
 
-    await browserManager.closePage(accountId)
+    // ─── ناموفق ───
+    const errMsg = result.error || `گام «${result.lastStep ?? '?'}» ناموفق بود`
+    await log(taskId, 'error', errMsg)
+
+    await prisma.automationResult.update({
+      where: { id: automationResult.id },
+      data: {
+        status: 'failed',
+        resultMessage: errMsg,
+        resultType: 'error',
+        errorCode: 'SUBMISSION_FAILED',
+        finishedAt: new Date(),
+        duration: Date.now() - startedAt,
+      },
+    })
+    await prisma.registrationProfile.update({
+      where: { id: profile.id },
+      data: { lastRun: new Date(), totalRuns: { increment: 1 }, failedRuns: { increment: 1 }, lastError: errMsg },
+    }).catch(() => {})
+
+    const kind = String(result.kind || 'error')
+
+    /* فقط وقتی تسلیم می‌شویم که موتور واقعا سقف بلندش را خرج کرده باشد.
+
+       block / waf → سقف ۲۰ بار داخل موتور ∷ تکرار دوباره بی‌فایده است
+       busy / timeout → سقف فقط ۵ بار است (حدود ۱۸ دقیقه) ∷ سایت ممکن
+         است نیم ساعت بعد سالم باشد، پس وظیفه باید دوباره در صف برود
+       dead / login → مشکل محلی است، تکرار منطقی است */
+    const engineExhausted = ['block', 'waf'].includes(kind)
+
+    if (PERMANENT.test(errMsg) || kind === 'permanent') {
+      await log(taskId, 'error', 'خطای دائمی — تلاش مجدد انجام نمی‌شود، داده را اصلاح کنید')
+      await notify('خطای دائمی — نیاز به بررسی', `پلاک ${profile.plateNumber}: ${errMsg}`, 'error')
+      await prisma.job.update({ where: { id: taskId }, data: { status: 'failed', error: errMsg, completedAt: new Date() } })
+      await createErrorLog(taskId, errMsg)
+    } else if (engineExhausted) {
+      const label = kind === 'waf' ? 'چالش امنیتی WAF' : 'بلاک IP'
+      await log(taskId, 'error',
+        `${label}: موتور تا ${MAX_RESTARTS} بار تلاش کرد و سایت پاسخ نداد — وظیفه متوقف شد`)
+      await notify(label, `پلاک ${profile.plateNumber}: بعد از ${MAX_RESTARTS} تلاش متوقف شد`, 'error')
+      await prisma.job.update({ where: { id: taskId }, data: { status: 'failed', error: errMsg, completedAt: new Date() } })
+      await createErrorLog(taskId, errMsg)
+    } else if (task.attempts < task.maxRetries) {
+      await retryTask(taskId, automationResult.id, errMsg, kind)
+    } else {
+      await prisma.job.update({ where: { id: taskId }, data: { status: 'failed', error: errMsg, completedAt: new Date() } })
+      await createErrorLog(taskId, errMsg)
+      await prisma.activityLog.create({
+        data: { action: 'task_failed', resource: 'automation', resourceId: taskId, details: { error: errMsg } },
+      }).catch(() => {})
+    }
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'خطای ناشناخته'
     await log(taskId, 'error', msg)
-
-    let screenshotPath: string | undefined
-    let htmlSnapshotPath: string | undefined
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let playwrightLog: any
-
-    try {
-      const errAccountId = 'default'
-      const errPage = await browserManager.createPage(errAccountId)
-      if (errPage) {
-        screenshotPath = await browserManager.screenshot(errPage, `error-${taskId}`)
-        htmlSnapshotPath = await browserManager.saveHtmlSnapshot(errPage, `error-${taskId}`)
-        const pageKey = browserManager.getPageKeyForPage(errPage)
-        const rawLog = pageKey ? browserManager.capturePageLog(pageKey) : browserManager.capturePlaywrightLog(errPage)
-        playwrightLog = JSON.parse(JSON.stringify(rawLog))
-        await browserManager.closePage(errAccountId)
-      }
-    } catch { }
 
     await prisma.automationResult.update({
       where: { id: automationResult.id },
@@ -267,94 +291,40 @@ export async function processWaybillJob(taskId: string): Promise<void> {
         resultMessage: msg,
         resultType: 'error',
         errorCode: 'EXCEPTION',
-        screenshotPath,
-        htmlSnapshotPath,
-        playwrightLog,
         finishedAt: new Date(),
         duration: Date.now() - startedAt,
       },
-    })
+    }).catch(() => {})
 
     if (task.attempts < task.maxRetries) {
       await retryTask(taskId, automationResult.id, msg)
     } else {
       await prisma.job.update({ where: { id: taskId }, data: { status: 'failed', error: msg, completedAt: new Date() } })
-      await createErrorLog(taskId, msg, screenshotPath)
-      await prisma.activityLog.create({ data: { action: 'task_failed', resource: 'automation', resourceId: taskId, details: { error: msg } } })
+      await createErrorLog(taskId, msg)
+      await prisma.activityLog.create({
+        data: { action: 'task_failed', resource: 'automation', resourceId: taskId, details: { error: msg } },
+      }).catch(() => {})
     }
   }
 }
 
-async function resolveWaybillData(taskId: string): Promise<WaybillData | null> {
-  const job = await prisma.job.findUnique({
-    where: { id: taskId },
-    include: {
-      profile: true,
-      waybill: {
-        include: {
-          sender: true,
-          receiver: true,
-          driver: true,
-          plate: true,
-          cargo: true,
-        },
-      },
-    },
-  })
-  if (!job) return null
-
-  if (job.profile) {
-    const p = job.profile
-    return {
-      plateNumber: p.plateNumber,
-      driverName: p.driverName,
-      senderFirstName: p.senderFirstName,
-      senderLastName: p.senderLastName,
-      senderMobile: p.senderMobile,
-      senderNationalId: p.senderNationalId,
-      receiverFirstName: p.receiverFirstName,
-      receiverLastName: p.receiverLastName,
-      receiverMobile: p.receiverMobile,
-      receiverNationalId: p.receiverNationalId,
-      originProvince: p.originProvince,
-      originCity: p.originCity,
-      destProvince: p.destProvince,
-      destCity: p.destCity,
-      cargoName: p.cargoName,
-      freightCost: p.freightCost || undefined,
-    }
-  }
-
-  if (!job.waybill) return null
-  const w = job.waybill
-  const senderName = (w.sender?.name || '').split(' ')
-  const receiverName = (w.receiver?.name || '').split(' ')
-
-  return {
-    plateNumber: w.plate?.plateNumber || '',
-    driverName: w.driver?.name || '',
-    senderFirstName: senderName[0] || '',
-    senderLastName: senderName.slice(1).join(' ') || '',
-    senderMobile: w.sender?.phone || '',
-    senderNationalId: w.sender?.nationalId || '',
-    receiverFirstName: receiverName[0] || '',
-    receiverLastName: receiverName.slice(1).join(' ') || '',
-    receiverMobile: w.receiver?.phone || '',
-    receiverNationalId: w.receiver?.nationalId || '',
-    originProvince: w.originProvince || '',
-    originCity: w.originCity || '',
-    destProvince: w.destProvince || '',
-    destCity: w.destCity || '',
-    cargoName: w.cargo?.name || '',
-    freightCost: w.freightCost || undefined,
-  }
-}
-
-async function retryTask(taskId: string, automationResultId: string, errorMessage: string): Promise<void> {
+async function retryTask(
+  taskId: string, automationResultId: string, errorMessage: string, kind = 'error',
+): Promise<void> {
   const oldJob = await prisma.job.findUnique({ where: { id: taskId } })
   if (!oldJob) return
 
-  const retryIntervals = [10, 30, 60, 120, 300]
+  /* فاصله‌ی تلاش مجدد بر اساس نوع خطا:
+
+       خطای گام/داده → ۱۰ ثانیه تا ۵ دقیقه (ممکن است فوری حل شود)
+       سرور مشغول/تایم‌اوت → ۱۰ تا ۶۰ دقیقه
+
+     موتور قبلا ۵ بار (حدود ۱۸ دقیقه) تلاش کرده؛ تکرار زودهنگام
+     فقط فشار بی‌فایده روی سایتی است که الان مریض است. */
+  const SITE_DOWN = ['busy', 'timeout', 'block', 'waf'].includes(kind)
+  const retryIntervals = SITE_DOWN
+    ? [10 * 60, 20 * 60, 30 * 60, 45 * 60, 60 * 60]
+    : [10, 30, 60, 120, 300]
   const retryDelay = retryIntervals[oldJob.attempts] || retryIntervals[retryIntervals.length - 1] || 60
 
   const newJob = await prisma.job.create({
@@ -375,24 +345,64 @@ async function retryTask(taskId: string, automationResultId: string, errorMessag
     data: { retryCount: oldJob.attempts + 1 },
   })
 
-  await prisma.job.update({ where: { id: taskId }, data: { status: 'failed', error: errorMessage, completedAt: new Date() } })
-
-  await log(taskId, 'info', `تلاش مجدد برنامه‌ریزی شد: Job ${newJob.id} در ${retryDelay} ثانیه`)
-  await prisma.activityLog.create({
-    data: { action: 'task_retry_scheduled', resource: 'automation', resourceId: taskId, details: { newJobId: newJob.id, retryDelay, attempt: oldJob.attempts + 1 } },
+  await prisma.job.update({
+    where: { id: taskId },
+    data: { status: 'failed', error: errorMessage, completedAt: new Date() },
   })
+
+  /* ⚠ مهم: جاب جدید باید به صف Redis هم اضافه شود.
+     قبلا فقط در دیتابیس ساخته می‌شد (status: 'pending') ولی هرگز
+     به صف اضافه نمی‌شد. ورکر فقط از Redis کار برمی‌دارد، پس جاب
+     برای همیشه در حالت «در انتظار» می‌ماند و هیچ‌وقت اجرا نمی‌شد. */
+  try {
+    const { automationQueue } = await import('./queue')
+    const profile = oldJob.profileId
+      ? await prisma.registrationProfile.findUnique({
+          where: { id: oldJob.profileId },
+          select: { plateNumber: true, accountId: true },
+        })
+      : null
+
+    await automationQueue.add(
+      'process-waybill',
+      {
+        taskId: newJob.id,
+        plateNumber: profile?.plateNumber || '',
+        accountId: profile?.accountId || '',
+        jobIndex: 0,
+        totalJobs: 1,
+      },
+      { delay: retryDelay * 1000, priority: oldJob.priority },
+    )
+    await log(taskId, 'info', `تلاش مجدد برنامه‌ریزی شد: Job ${newJob.id} در ${retryDelay} ثانیه`)
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e)
+    await log(taskId, 'error',
+      `جاب تلاش مجدد ساخته شد ولی به صف اضافه نشد (Redis در دسترس نیست؟): ${m}`)
+    // جاب یتیم را علامت بزن تا در صف وظایف گمراه‌کننده نباشد
+    await prisma.job.update({
+      where: { id: newJob.id },
+      data: { status: 'failed', error: 'به صف اضافه نشد: ' + m, completedAt: new Date() },
+    }).catch(() => {})
+  }
+
+  await prisma.activityLog.create({
+    data: {
+      action: 'task_retry_scheduled', resource: 'automation', resourceId: taskId,
+      details: { newJobId: newJob.id, retryDelay, attempt: oldJob.attempts + 1 },
+    },
+  }).catch(() => {})
 }
 
-async function failJobAndResult(taskId: string, automationResultId: string, message: string, resultType: string, startedAt: number): Promise<void> {
+async function failJobAndResult(
+  taskId: string, automationResultId: string, message: string, resultType: string, startedAt: number,
+): Promise<void> {
   await prisma.job.update({ where: { id: taskId }, data: { status: 'failed', error: message, completedAt: new Date() } })
   await prisma.automationResult.update({
     where: { id: automationResultId },
     data: {
-      status: 'failed',
-      resultMessage: message,
-      resultType,
-      finishedAt: new Date(),
-      duration: Date.now() - startedAt,
+      status: 'failed', resultMessage: message, resultType,
+      finishedAt: new Date(), duration: Date.now() - startedAt,
     },
   })
 }
@@ -414,5 +424,3 @@ async function createErrorLog(jobId: string, message: string, screenshotPath?: s
 async function log(jobId: string, level: string, message: string) {
   await prisma.jobLog.create({ data: { jobId, level, message } }).catch(() => {})
 }
-
-function delay(ms: number) { return new Promise((r) => setTimeout(r, ms)) }

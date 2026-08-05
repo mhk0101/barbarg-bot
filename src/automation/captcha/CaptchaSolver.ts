@@ -428,31 +428,30 @@ export class CaptchaSolver {
         }
       }
 
-      // ۱) بدون OCR — از DOM
-      const domText = await this.extractFromDom(page)
-      if (domText) {
-        const ans = solveMathExpression(domText)
-        if (ans !== null) {
-          return { text: ans, confidence: 100, needsManualReview: false, raw: domText, method: 'dom', imageState: 'ok' }
-        }
-      }
-
-      // ۲) تطبیق الگو (روش اصلی برای ارقام فارسی)
+      // ─────────────────────────────────────────────────────────────
+      // دقیقا همان مسیر تصمیم‌گیری test-step1.js:
+      //   تطبیق الگو تنها مرجع است. اگر خطا داد یا اطمینان < ۰.۴۲ بود،
+      //   کپچای تازه می‌گیریم. هیچ‌وقت به OCR تکیه نمی‌کنیم چون روی
+      //   ارقام فارسی نتیجه‌ی غلط می‌دهد و پاسخ اشتباه بدتر از نخواندن است.
+      // ─────────────────────────────────────────────────────────────
       const tpl = await classifyByTemplate(page)
 
-      if (tpl.error === 'not-loaded' || tpl.error === 'empty') {
+      if (tpl.error) {
+        const reload = tpl.error === 'not-loaded' || tpl.error === 'empty' || tpl.error === 'no-image'
         return {
           text: '', confidence: 0, needsManualReview: true,
-          method: `template:${tpl.error}`, imageState: tpl.error, needsReload: true,
-          raw: 'تصویر کپچا خالی یا بارگذاری‌نشده',
+          method: `template:${tpl.error}`, imageState: tpl.error,
+          needsReload: reload,
+          raw: `تطبیق الگو ناموفق: ${tpl.error}`,
         }
       }
 
       if (tpl.symbols && tpl.expr) {
-        const minScore = Math.min(...tpl.symbols.map((s) => s.score))
+        const minScore = Math.min(...tpl.symbols.map((sym) => sym.score))
         const answer = solveMathExpression(tpl.expr)
-        const detail = tpl.symbols.map((s) => `${s.value}(${s.score.toFixed(2)})`).join(' ')
+        const detail = tpl.symbols.map((sym) => `${sym.value}(${sym.score.toFixed(2)})`).join(' ')
 
+        // شرط پذیرش — عینا مثل تستر: ans !== null && minS >= 0.42
         if (answer !== null && minScore >= 0.42) {
           const n = parseInt(answer, 10)
           if (!Number.isNaN(n) && n >= 0 && n <= 999) {
@@ -467,39 +466,17 @@ export class CaptchaSolver {
           }
         }
 
-        // امتیاز پایین → با OCR تأیید بگیر
-        const ocr = await this.ocrRead(page)
-        if (answer !== null && ocr.answer === answer) {
-          return {
-            text: answer, confidence: 80, needsManualReview: false,
-            raw: `${tpl.expr} ✓OCR [${detail}]`, method: 'template+ocr', imageState: 'ok',
-          }
-        }
-        if (ocr.answer !== null) {
-          return {
-            text: ocr.answer, confidence: 55, needsManualReview: false,
-            raw: `${ocr.raw} (الگو: ${tpl.expr})`, method: ocr.method, imageState: 'ok',
-          }
-        }
         return {
-          text: '', confidence: 0, needsManualReview: true,
-          raw: `الگو نامطمئن: ${tpl.expr} [${detail}]`, method: 'template-low', imageState: 'ok',
+          text: '', confidence: Math.round(minScore * 100), needsManualReview: true,
+          raw: `الگو نامطمئن (${(minScore * 100).toFixed(0)}%): ${tpl.expr} [${detail}]`,
+          method: 'template-low', imageState: 'ok',
         }
       }
 
-      // ۳) پشتیبان — OCR کل تصویر
-      const { raw, answer, method } = await this.ocrRead(page)
-      if (answer !== null) {
-        return { text: answer, confidence: 60, needsManualReview: false, raw, method, imageState: 'ok' }
-      }
-
-      // اگر OCR فقط «captcha» خواند یعنی تصویر واقعی نیامده
-      const needsReload = /captcha/i.test(raw) && !/\d/.test(raw)
       return {
-        text: '', confidence: 0, needsManualReview: true, raw,
-        method: tpl.error ? `template:${tpl.error}` : method,
-        imageState: needsReload ? 'not-loaded' : 'ok',
-        needsReload,
+        text: '', confidence: 0, needsManualReview: true,
+        raw: 'نمادی در تصویر پیدا نشد', method: 'template-nosymbols',
+        imageState: 'ok', needsReload: true,
       }
     } catch (e) {
       return {

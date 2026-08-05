@@ -3,11 +3,11 @@
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { useTheme } from '@/components/layout/ThemeProvider'
-import { signOut, useSession } from 'next-auth/react'
 import { Sun, Moon, Bell, Menu, LogOut, Settings, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { toast } from 'sonner'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -52,9 +52,82 @@ export function Header({ onMenuToggle }: { onMenuToggle: () => void }) {
   const pathname = usePathname()
   const router = useRouter()
   const { theme, setTheme } = useTheme()
-  const { data: session } = useSession()
   const [mounted, setMounted] = useState(false)
+  const [signingOut, setSigningOut] = useState(false)
+  const [user, setUser] = useState<{ name?: string; email?: string } | null>(null)
+  const [unread, setUnread] = useState(0)
   useEffect(() => setMounted(true), [])
+
+  /* نام و ایمیل را از سیستم احراز هویت واقعی (access_token) می‌گیریم.
+     قبلا از useSession ی نکست‌اوث خوانده می‌شد که هیچ‌وقت مقداری نداشت
+     (ورود از /api/auth/login انجام می‌شود نه نکست‌اوث) — برای همین
+     نام و ایمیل در منو خالی بود و signOut هم خطای ClientFetchError می‌داد. */
+  useEffect(() => {
+    let alive = true
+    fetch('/api/auth/profile', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive && d?.user) setUser({ name: d.user.name, email: d.user.email }) })
+      .catch(() => { /* مهم نیست — فقط نمایش است */ })
+    return () => { alive = false }
+  }, [])
+
+  /* شمارش اعلان‌های خوانده‌نشده برای نشان روی زنگوله.
+     قبلا عدد «۳» هاردکد بود و دکمه هیچ onClick نداشت. */
+  useEffect(() => {
+    let alive = true
+
+    const load = () => {
+      if (document.hidden) return
+      fetch('/api/notifications?unread=true', { credentials: 'include' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (alive) setUnread(Array.isArray(d?.data) ? d.data.length : 0) })
+        .catch(() => { /* بی‌صدا — نشان صرفا تزئینی است */ })
+    }
+
+    load()
+    const id = setInterval(load, 30000)
+    document.addEventListener('visibilitychange', load)
+    return () => {
+      alive = false
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', load)
+    }
+  }, [pathname])   // با هر جابه‌جایی صفحه هم تازه شود
+
+  /**
+   * خروج از حساب.
+   *
+   * نگهبان واقعی پنل، کوکی access_token است که /api/auth/login
+   * می‌گذارد و (panel)/layout.tsx آن را چک می‌کند.
+   * چون httpOnly است، جاوااسکریپت نمی‌تواند پاکش کند —
+   * حتما باید سرور با DELETE پاکش کند.
+   *
+   * به کاربر فقط پیام فارسی نشان داده می‌شود، نه خطای فنی.
+   */
+  const handleSignOut = async () => {
+    if (signingOut) return
+    setSigningOut(true)
+
+    const toastId = toast.loading('در حال خروج از حساب…')
+    let cleared = false
+
+    // ۱) کوکی اصلی (access_token + refresh_token) را سرور پاک کند
+    try {
+      const res = await fetch('/api/auth/login', { method: 'DELETE', credentials: 'include' })
+      cleared = res.ok
+    } catch {
+      cleared = false
+    }
+
+    if (cleared) {
+      toast.success('با موفقیت خارج شدید', { id: toastId })
+    } else {
+      toast.error('خروج کامل انجام نشد — به صفحه ورود منتقل می‌شوید', { id: toastId })
+    }
+
+    // ۳) ناوبری کامل (نه router.push) تا کش سمت سرور هم تازه شود
+    setTimeout(() => { window.location.href = '/login' }, 600)
+  }
 
   const title =
     routeTitles[pathname] ||
@@ -66,7 +139,7 @@ export function Header({ onMenuToggle }: { onMenuToggle: () => void }) {
     'داشبورد'
 
   const initials =
-    session?.user?.name
+    user?.name
       ?.split(' ')
       .map((n) => n[0])
       .join('')
@@ -91,14 +164,22 @@ export function Header({ onMenuToggle }: { onMenuToggle: () => void }) {
           >
             {mounted && (theme === 'dark' ? <Sun className="size-5" /> : <Moon className="size-5" />)}
           </Button>
-          <Button variant="ghost" size="icon" className="relative rounded-xl">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="relative rounded-xl"
+            title={unread > 0 ? `${unread} اعلان خوانده‌نشده` : 'اعلان‌ها'}
+            onClick={() => router.push('/panel/notifications')}
+          >
             <Bell className="size-5" />
-            <Badge
-              variant="destructive"
-              className="absolute -top-0.5 -left-0.5 flex size-4 items-center justify-center p-0 text-[10px] shadow-sm"
-            >
-              ۳
-            </Badge>
+            {unread > 0 && (
+              <Badge
+                variant="destructive"
+                className="absolute -top-0.5 -left-0.5 flex size-4 items-center justify-center p-0 text-[10px] shadow-sm"
+              >
+                {unread > 99 ? '۹۹+' : unread.toLocaleString('fa-IR')}
+              </Badge>
+            )}
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -111,19 +192,21 @@ export function Header({ onMenuToggle }: { onMenuToggle: () => void }) {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" sideOffset={8}>
               <div className="px-2 py-1.5">
-                <p className="text-sm font-medium">{session?.user?.name}</p>
-                <p className="text-xs text-muted-foreground">{session?.user?.email}</p>
+                <p className="text-sm font-medium">{user?.name || 'کاربر'}</p>
+                <p className="text-xs text-muted-foreground">{user?.email || ''}</p>
               </div>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => router.push('/panel/settings')}>
+              {/* Base UI از onClick استفاده می‌کند نه onSelect (آن مال Radix است) */}
+              <DropdownMenuItem onClick={() => router.push('/panel/settings')}>
                 <Settings className="size-4" /> تنظیمات
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 variant="destructive"
-                onSelect={() => signOut({ callbackUrl: '/login' })}
+                disabled={signingOut}
+                onClick={handleSignOut}
               >
-                <LogOut className="size-4" /> خروج
+                <LogOut className="size-4" /> {signingOut ? 'در حال خروج…' : 'خروج'}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

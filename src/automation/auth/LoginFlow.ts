@@ -3,7 +3,9 @@ import path from 'path'
 import fs from 'fs'
 import { browserManager } from '../browser/BrowserManager'
 import { captchaSolver, normalizeDigits } from '../captcha/CaptchaSolver'
-import { gotoResilient, reloadResilient, isIpBlockError, runWithBlockRetry } from '../browser/Resilience'
+import { gotoResilient, reloadResilient, isIpBlockError, runWithBlockRetry,
+         isServerBusy, readBusyMessage, SERVER_BUSY_MARK,
+         waitForSwalError, SWAL_ERROR_MARK } from '../browser/Resilience'
 
 const SITE_URL = 'https://barname.utcms.ir'
 const LOGIN_URL = `${SITE_URL}/Barname/Account/Login`
@@ -137,7 +139,7 @@ export class LoginFlow {
     },
   ): Promise<{ success: boolean; error?: string; captchaAttempts: number }> {
     const target = opts?.targetUrl ?? TARGET_URL
-    const maxAttempts = opts?.maxCaptchaAttempts ?? 5
+    const maxAttempts = opts?.maxCaptchaAttempts ?? 8
     const step = async (m: string, l: 'info' | 'success' | 'error' | 'warn' = 'info') => {
       try { await opts?.onStep?.(m, l) } catch {}
     }
@@ -158,6 +160,13 @@ export class LoginFlow {
         }
       }
       await this.waitForPageReady(page)
+
+      // «سرور در حال حاضر قادر به پاسخگویی نمی‌باشد» → باید مرورگر بسته و صبر شود
+      if (await isServerBusy(page)) {
+        const msg = await readBusyMessage(page)
+        await step(`سایت پیام مشغولی داد: ${msg}`, 'warn')
+        return { success: false, error: `${SERVER_BUSY_MARK} ${msg}`, captchaAttempts }
+      }
 
       // اگر از قبل وارد بودیم، مستقیم برو به مقصد
       if (!page.url().includes('Login')) {
@@ -209,6 +218,7 @@ export class LoginFlow {
             continue
           }
 
+          // مثل تستر: اطمینان پایین ⇒ فقط تصویر تازه (رفرش کامل لازم نیست)
           await step(`کپچا وارد نشد (تلاش ${attempt}/${maxAttempts}) — تصویر تازه می‌گیرم`, 'warn')
           const refreshed = await captchaSolver.refreshCaptcha(page)
           if (!refreshed) {
@@ -239,11 +249,19 @@ export class LoginFlow {
         const loginBtn = await page.$('#inter, button[type="submit"]')
         if (!loginBtn) return { success: false, error: 'دکمه ورود پیدا نشد', captchaAttempts }
 
+        let loginRes: { ok: boolean; error?: string; fatal?: boolean; transient?: string; waited: number }
         try {
           await loginBtn.click()
           // صبر فعال تا نتیجه‌ی ورود مشخص شود — ورود ممکن است چند ثانیه طول بکشد
-          const lr = await this.waitLoginResult(page, 30000)
-          if (lr.waited >= 5) await step(`ورود ${lr.waited} ثانیه طول کشید`, 'info')
+          loginRes = await this.waitLoginResult(page, 45000)
+          if (loginRes.waited >= 5) await step(`ورود ${loginRes.waited} ثانیه طول کشید`, 'info')
+          if (loginRes.transient) {
+            await step(`سایت خطای موقتی داد ولی ادامه دادیم: ${loginRes.transient.slice(0, 90)}`, 'warn')
+          }
+          if (loginRes.fatal) {
+            await step(`خطای قطعی ورود: ${loginRes.error}`, 'error')
+            return { success: false, error: loginRes.error ?? 'ورود ناموفق', captchaAttempts }
+          }
         } catch (e) {
           if (isIpBlockError(e)) {
             return { success: false, error: 'بلاک: IP هنگام ارسال فرم بسته شد', captchaAttempts }
@@ -251,6 +269,12 @@ export class LoginFlow {
           throw e
         }
         await this.waitForPageReady(page)
+
+        if (await isServerBusy(page)) {
+          const msg = await readBusyMessage(page)
+          await step(`سایت پیام مشغولی داد: ${msg}`, 'warn')
+          return { success: false, error: `${SERVER_BUSY_MARK} ${msg}`, captchaAttempts }
+        }
 
         if (!page.url().includes('Login')) {
           await step('ورود موفق', 'success')
@@ -303,11 +327,24 @@ export class LoginFlow {
    * هر ۵۰۰ms بررسی می‌کند؛ به‌محض خروج از صفحه‌ی ورود یا ظاهر شدن خطا
    * برمی‌گردد. این‌طور هم ورودهای کند پشتیبانی می‌شوند و هم وقت تلف نمی‌شود.
    */
+  /**
+   * پس از کلیک «ورود» صبر می‌کند تا نتیجه مشخص شود.
+   *
+   * نکته‌ی مهم: سایت گاهی پاپ‌آپ خطای موقتی (503 / Internal Server Error)
+   * نشان می‌دهد ولی ورود چند ثانیه بعد کامل می‌شود. پس خطای موقتی را
+   * پایان کار حساب نمی‌کنیم و به پایش ادامه می‌دهیم؛ فقط خطاهای قطعی
+   * (رمز اشتباه، حساب مسدود) بلافاصله شکست تلقی می‌شوند.
+   */
   private async waitLoginResult(
     page: Page,
-    maxMs = 30000,
-  ): Promise<{ ok: boolean; error?: string; waited: number }> {
+    maxMs = 45000,
+  ): Promise<{ ok: boolean; error?: string; fatal?: boolean; transient?: string; waited: number }> {
     const t0 = Date.now()
+    let transient = ''
+    let hardError = ''
+
+    const TRANSIENT = /50[0-9]|service is unavailable|Internal Server Error|قادر به پاسخگویی|timeout|Gateway/i
+    const FATAL = /رمز|کلمه عبور|کاربری یافت نشد|کد ملی|نام کاربری|قفل|مسدود|غیرفعال/
 
     while (Date.now() - t0 < maxMs) {
       let url = ''
@@ -315,29 +352,48 @@ export class LoginFlow {
 
       if (url && !url.includes('Login')) {
         await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
-        return { ok: true, waited: Math.round((Date.now() - t0) / 1000) }
+        return { ok: true, waited: Math.round((Date.now() - t0) / 1000), transient }
       }
 
+      // نشانه‌ی دوم موفقیت: فرم ورود رفته و رابط برنامه آمده
+      const gone = await page.evaluate(() => {
+        const hasLogin = !!document.querySelector('#NationalCode, #user-password, #inter')
+        const hasApp = !!document.querySelector('#senderSelectType, #btnAddLoad, .navbar, #layout-menu')
+        return !hasLogin && hasApp
+      }).catch(() => false)
+      if (gone) return { ok: true, waited: Math.round((Date.now() - t0) / 1000), transient }
+
       const err = await page.evaluate(() => {
-        const sels = ['.alert-danger', '.text-danger', '.validation-summary-errors',
-                      '[role="alert"]', '.toast-error', '.swal2-html-container']
-        for (const s of sels) {
-          for (const el of Array.from(document.querySelectorAll(s))) {
+        const sels = ['.swal2-html-container', '.alert-danger', '.text-danger',
+                      '.validation-summary-errors', '[role="alert"]', '.toast-error']
+        for (const sel of sels) {
+          for (const el of Array.from(document.querySelectorAll(sel))) {
             const he = el as HTMLElement
             if (he.offsetParent === null) continue
             const t = (he.innerText || '').trim()
-            if (t && t.length > 2) return t.replace(/\s+/g, ' ').slice(0, 160)
+            if (t && t.length > 2) return t.replace(/\s+/g, ' ').slice(0, 200)
           }
         }
         return ''
       }).catch(() => '')
 
-      if (err) return { ok: false, error: err, waited: Math.round((Date.now() - t0) / 1000) }
+      if (err) {
+        if (FATAL.test(err)) {
+          return { ok: false, error: err, fatal: true, waited: Math.round((Date.now() - t0) / 1000) }
+        }
+        if (TRANSIENT.test(err)) transient = err
+        else hardError = err
+      }
 
       await page.waitForTimeout(500).catch(() => {})
     }
 
-    return { ok: false, error: 'زمان انتظار ورود تمام شد', waited: Math.round((Date.now() - t0) / 1000) }
+    return {
+      ok: false,
+      error: hardError || transient || 'زمان انتظار ورود تمام شد',
+      transient,
+      waited: Math.round((Date.now() - t0) / 1000),
+    }
   }
 
   private async goToTarget(
@@ -362,8 +418,20 @@ export class LoginFlow {
     }
     await this.waitForPageReady(page)
 
+    if (await isServerBusy(page)) {
+      const msg = await readBusyMessage(page)
+      return { success: false, error: `${SERVER_BUSY_MARK} ${msg}`, captchaAttempts }
+    }
+
     if (page.url().includes('Login')) {
       return { success: false, error: 'پس از ورود دوباره به صفحه ورود برگشتیم (سشن پذیرفته نشد)', captchaAttempts }
+    }
+
+    // پاپ‌آپ خطا (SweetAlert) چند ثانیه بعد از باز شدن صفحه ظاهر می‌شود
+    const swal = await waitForSwalError(page, 3500)
+    if (swal) {
+      await step(`پاپ‌آپ خطا روی صفحه عملیات: ${swal}`, 'warn')
+      return { success: false, error: `${SWAL_ERROR_MARK} ${swal}`, captchaAttempts }
     }
 
     await step(`صفحه عملیات باز شد: ${page.url()}`, 'success')

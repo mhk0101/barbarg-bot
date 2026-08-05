@@ -87,26 +87,42 @@ const emptyForm: Record<string, string | number> = {
   retryIntervalSec: 30, priority: 0, notes: '',
 }
 
+// مطابق ویزارد واقعی سایت (۱۰ گام) — اینجا گام‌های داده‌محور نمایش داده می‌شوند
 const STEPS = [
   { label: 'مشخصات فرستنده', icon: Send },
   { label: 'مشخصات گیرنده', icon: User },
-  { label: 'وسیله و راننده', icon: Truck },
-  { label: 'مشخصات بار', icon: Package },
-  { label: 'کرایه و مسیر', icon: CreditCard },
+  { label: 'راننده و خودرو', icon: Truck },
+  { label: 'مشخصات کالا', icon: Package },
+  { label: 'مبدا و مقصد', icon: CreditCard },
   { label: 'بازبینی', icon: Eye },
 ]
 
 const SENDER_TYPES = ['حقیقی', 'حقوقی']  // مطابق سایت: 1=حقیقی (پیش‌فرض)، 2=حقوقی
-const RECEIVER_TYPES = ['شرکتی', 'نیمه‌شرکتی', 'حقیقی', 'حاجی']
+const RECEIVER_TYPES = ['حقیقی', 'حقوقی']  // مطابق سایت: 1=حقیقی (پیش‌فرض)، 2=حقوقی
 const INSURANCE_OPTIONS = ['دارد', 'ندارد']
 const GENDER_OPTIONS = ['مرد', 'زن']
-const FARE_TYPES = ['نقدی', '信用ی', 'ترکیبی']
+const FARE_TYPES = ['نقدی', 'اعتباری', 'ترکیبی']
 const CARGO_TYPES = [
   'آهن آلات', 'پلیمری', 'سیمان', 'گندم', 'برنج', 'شکر', 'روغن',
   'مواد شیمیایی', 'کود', 'مصالح ساختمانی', 'لوازم خانگی', 'پوشاک',
   'مواد غذایی', 'دارو', 'لوازم یدکی', 'مبلمان', 'سنگ', 'چوب',
-  'کاغذ', 'قهوه', 'چای', 'میوه', 'سبزیجات', 'گوشت', ' لبنیات',
-  '弹药', 'سایر',
+  'کاغذ', 'قهوه', 'چای', 'میوه', 'سبزیجات', 'گوشت', 'لبنیات',
+  'آجر', 'شن و ماسه', 'گچ', 'کاشی و سرامیک', 'سایر',
+]
+
+// نوع بسته‌بندی — مطابق گزینه‌های سایت
+// دقیقاً گزینه‌های #ddBoxType در سایت
+// استان‌های سایت (باید دقیقا با گزینه‌های #ddStateSource یکی باشد)
+const PROVINCE_LIST = [
+  'آذربایجان شرقی', 'آذربایجان غربی', 'اردبیل', 'اصفهان', 'البرز', 'ایلام', 'بوشهر',
+  'تهران', 'چهارمحال و بختیاری', 'خراسان جنوبی', 'خراسان رضوی', 'خراسان شمالی',
+  'خوزستان', 'زنجان', 'سمنان', 'سیستان و بلوچستان', 'فارس', 'قزوین', 'قم', 'گلستان',
+  'گیلان', 'لرستان', 'مازندران', 'مرکزی', 'هرمزگان', 'همدان', 'کردستان', 'کرمان',
+  'کرمانشاه', 'کهگیلویه و بویر احمد', 'یزد',
+]
+
+const PACKAGING_TYPES = [
+  'کارتن', 'جعبه', 'کیسه', 'گونی', 'جامبو', 'بشکه', 'رول', 'فله', 'عدل', 'شاخه', 'سایر',
 ]
 
 export default function ProfilesPage() {
@@ -211,8 +227,34 @@ export default function ProfilesPage() {
   }
 
   const handleSave = async () => {
-    if (!form.name || !form.plateNumber || !form.driverName || !form.driverNationalId) {
-      toast.error('فیلدهای الزامی را پر کنید')
+    const required: Array<[string, string, number]> = [
+      ['name', 'نام پروفایل', 1],
+      ['senderFirstName', 'نام فرستنده', 1],
+      ['senderLastName', 'نام خانوادگی فرستنده', 1],
+      ['senderMobile', 'موبایل فرستنده', 1],
+      ['receiverFirstName', 'نام گیرنده', 2],
+      ['receiverLastName', 'نام خانوادگی گیرنده', 2],
+      ['receiverMobile', 'موبایل گیرنده', 2],
+      ['plateNumber', 'شماره پلاک', 3],
+      ['driverName', 'نام راننده', 3],
+      ['driverNationalId', 'کد ملی راننده', 3],
+      ['cargoName', 'نام کالا', 4],
+      ['originProvince', 'استان مبدا', 5],
+      ['originCity', 'شهر مبدا', 5],
+      ['originAddress', 'آدرس مبدا', 5],
+      ['destProvince', 'استان مقصد', 5],
+      ['destCity', 'شهر مقصد', 5],
+      ['destAddress', 'آدرس مقصد', 5],
+    ]
+    const missing = required.filter(([k]) => !String((form as Record<string, unknown>)[k] ?? '').trim())
+    if (missing.length > 0) {
+      const [, label, stepNo] = missing[0]
+      toast.error(
+        missing.length === 1
+          ? `«${label}» را پر کنید (مرحله ${stepNo})`
+          : `${missing.length} فیلد الزامی خالی است — اولی: «${label}» در مرحله ${stepNo}`,
+      )
+      setStep(missing[0][2] - 1)
       return
     }
     setSaving(true)
@@ -400,6 +442,9 @@ export default function ProfilesPage() {
             {step === 0 && (
               <div className="space-y-4">
                 <SectionTitle title="مرحله ۱: مشخصات فرستنده" />
+                <div className="grid grid-cols-1 gap-4">
+                  <Field label="نام پروفایل *" value={form.name as string} onChange={(v) => updateField('name', v)} placeholder="مثلا: پلاک 45ع923 - سیرجان" />
+                </div>
                 <div className="grid grid-cols-2 gap-4">
                   <FieldSelect label="نوع فرستنده *" value={form.senderType as string} onChange={(v) => updateField('senderType', v)} options={SENDER_TYPES} placeholder="انتخاب کنید" />
                   <Field label="کدملی *" value={form.senderNationalId as string} onChange={(v) => updateField('senderNationalId', v)} placeholder="کدملی" />
@@ -444,7 +489,7 @@ export default function ProfilesPage() {
                         </SelectContent>
                       </Select>
                     </div>
-                    <Field label="شماره پلاک *" value={form.plateNumber as string} onChange={(v) => updateField('plateNumber', v)} placeholder="۱۲ الف ۳۴۵" />
+                    <PlateField value={form.plateNumber as string} onChange={(v) => updateField('plateNumber', v)} />
                     <Field label="شماره مسلسل" value={form.vehicleSerialNumber as string} onChange={(v) => updateField('vehicleSerialNumber', v)} />
                     <Field label="شماره موتور" value={form.vehicleMotorNumber as string} onChange={(v) => updateField('vehicleMotorNumber', v)} />
                     <FieldSelect label="برگه بیمه" value={form.vehicleInsurancePage as string} onChange={(v) => updateField('vehicleInsurancePage', v)} options={INSURANCE_OPTIONS} placeholder="انتخاب کنید" />
@@ -460,7 +505,7 @@ export default function ProfilesPage() {
                     <Field label="شماره گواهینامه" value={form.driverLicense as string} onChange={(v) => updateField('driverLicense', v)} />
                     <Field label="شماره کارت" value={form.driverCard as string} onChange={(v) => updateField('driverCard', v)} />
                     <Field label="شماره شناسنامه" value={form.driverIdNumber as string} onChange={(v) => updateField('driverIdNumber', v)} />
-                    <Field label="کد ملی راننده" value={form.driverNationalId as string} onChange={(v) => updateField('driverNationalId', v)} />
+                    <Field label="کد ملی راننده *" value={form.driverNationalId as string} onChange={(v) => updateField('driverNationalId', v)} placeholder="۱۰ رقمی" />
                     <FieldSelect label="جنسیت" value={form.driverGender as string} onChange={(v) => updateField('driverGender', v)} options={GENDER_OPTIONS} placeholder="انتخاب کنید" />
                   </div>
                 </div>
@@ -472,17 +517,37 @@ export default function ProfilesPage() {
                 <SectionTitle title="مرحله ۴: مشخصات بار" />
                 <div className="grid grid-cols-2 gap-4">
                   <FieldSelect label="کالای قابل بارگیری *" value={form.cargoName as string} onChange={(v) => updateField('cargoName', v)} options={CARGO_TYPES} placeholder="انتخاب کنید" />
-                  <Field label="نوع بسته‌بندی" value={form.cargoPackaging as string} onChange={(v) => updateField('cargoPackaging', v)} />
-                  <Field label="وزن بار" value={form.cargoWeight as string} onChange={(v) => updateField('cargoWeight', v)} placeholder="کیلوگرم" />
-                  <Field label="تعداد" value={form.cargoQuantity as string} onChange={(v) => updateField('cargoQuantity', v)} placeholder="تعداد" />
+                  <FieldSelect label="نوع بسته‌بندی" value={form.cargoPackaging as string} onChange={(v) => updateField('cargoPackaging', v)} options={PACKAGING_TYPES} placeholder="انتخاب کنید" />
+                  <Field label="وزن بار (تن)" value={form.cargoWeight as string} onChange={(v) => updateField('cargoWeight', v)} placeholder="مثلا 19" />
+                  <Field label="تعداد بسته" value={form.cargoQuantity as string} onChange={(v) => updateField('cargoQuantity', v)} placeholder="مثلا 19" />
+                  <Field label="ارزش تقریبی بار (ریال) *" value={form.cargoValue as string} onChange={(v) => updateField('cargoValue', v)} placeholder="مثلا 10000000" />
                 </div>
               </div>
             )}
 
             {step === 4 && (
               <div className="space-y-4">
-                <SectionTitle title="مرحله ۵: کرایه و مسیر حمل" />
+                <SectionTitle title="مرحله ۵: مبدا، مقصد و کرایه" />
+
+                <p className="text-sm font-semibold text-muted-foreground">مبدا بارگیری (گام ۵ سایت)</p>
                 <div className="grid grid-cols-2 gap-4">
+                  <FieldSelect label="استان مبدا *" value={form.originProvince as string} onChange={(v) => updateField('originProvince', v)} options={PROVINCE_LIST} placeholder="انتخاب کنید" />
+                  <Field label="شهر مبدا *" value={form.originCity as string} onChange={(v) => updateField('originCity', v)} placeholder="مثلا سیرجان" />
+                  <Field label="آدرس مبدا *" value={form.originAddress as string} onChange={(v) => updateField('originAddress', v)} placeholder="خیابان، کوچه، پلاک" />
+                  <Field label="کدپستی مبدا" value={form.originPostalCode as string} onChange={(v) => updateField('originPostalCode', v)} placeholder="اختیاری" />
+                </div>
+
+                <p className="text-sm font-semibold text-muted-foreground pt-2">مقصد تخلیه (گام ۶ سایت)</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <FieldSelect label="استان مقصد *" value={form.destProvince as string} onChange={(v) => updateField('destProvince', v)} options={PROVINCE_LIST} placeholder="انتخاب کنید" />
+                  <Field label="شهر مقصد *" value={form.destCity as string} onChange={(v) => updateField('destCity', v)} placeholder="مثلا سیرجان" />
+                  <Field label="آدرس مقصد *" value={form.destAddress as string} onChange={(v) => updateField('destAddress', v)} placeholder="خیابان، کوچه، پلاک" />
+                  <Field label="کدپستی مقصد" value={form.destPostalCode as string} onChange={(v) => updateField('destPostalCode', v)} placeholder="اختیاری" />
+                </div>
+
+                <p className="text-sm font-semibold text-muted-foreground pt-2">کرایه (گام ۸ سایت)</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <Field label="مبلغ کرایه (ریال) *" value={form.freightCost as string} onChange={(v) => updateField('freightCost', v)} placeholder="مثلا 5000000" />
                   <Field label="پیش کرایه" value={form.advanceFare as string} onChange={(v) => updateField('advanceFare', v)} placeholder="مبلغ" />
                   <FieldSelect label="نوع کرایه" value={form.fareType as string} onChange={(v) => updateField('fareType', v)} options={FARE_TYPES} placeholder="انتخاب کنید" />
                   <Field label="بیمه باربری" value={form.transportInsurance as string} onChange={(v) => updateField('transportInsurance', v)} />
@@ -498,8 +563,9 @@ export default function ProfilesPage() {
                 <SectionTitle title="مرحله ۶: بازبینی مشخصات" />
                 <ReviewSummary form={form} accounts={accounts} />
 
-                <div className="grid grid-cols-1 gap-4 pt-4 border-t">
-                  <Field label="کد امنیتی *" value={form.captchaAnswer as string} onChange={(v) => updateField('captchaAnswer', v)} placeholder="کپچا" />
+                <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                  کپچای سایت را ربات هنگام ثبت به‌صورت خودکار می‌خواند و حل می‌کند؛
+                  نیازی به وارد کردن آن در اینجا نیست.
                 </div>
               </div>
             )}
@@ -627,6 +693,98 @@ function ReviewSummary({ form, accounts }: { form: Record<string, string | numbe
           </div>
         </div>
       ))}
+    </div>
+  )
+}
+
+/**
+ * ورودی پلاک با چهار بخش مجزا — دقیقا مثل خود پلاک خودرو.
+ * ترتیب چیدمان مثل پلاک واقعی است (از راست: کد ایران).
+ * خروجی همیشه به قالب استاندارد «45 ع 923 17» ذخیره می‌شود
+ * تا تطبیق با سایت هیچ‌وقت به‌هم نریزد.
+ */
+const PLATE_LETTERS_FA = [
+  'الف', 'ب', 'پ', 'ت', 'ث', 'ج', 'چ', 'ح', 'خ', 'د', 'ذ', 'ر', 'ز', 'ژ',
+  'س', 'ش', 'ص', 'ض', 'ط', 'ظ', 'ع', 'غ', 'ف', 'ق', 'ک', 'گ', 'ل', 'م',
+  'ن', 'و', 'ه', 'ی',
+]
+
+/** ارقام فارسی/عربی → لاتین */
+function toLatinDigits(v: string): string {
+  return String(v ?? '')
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+}
+
+/** «45 ع 923 17» → اجزا */
+function parsePlateParts(v: string): { two: string; letter: string; three: string; iran: string } {
+  const s = toLatinDigits(v).replace(/ايران|ایران/g, ' ').trim()
+  const m = s.match(/(\d{1,2})\s*[-\s]?\s*([\u0600-\u06FF]+)\s*[-\s]?\s*(\d{1,3})\s*[-\s]?\s*(\d{1,2})/)
+  if (m) return { two: m[1], letter: m[2].trim(), three: m[3], iran: m[4] }
+  return { two: '', letter: '', three: '', iran: '' }
+}
+
+function PlateField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const p = parsePlateParts(value || '')
+
+  const emit = (two: string, letter: string, three: string, iran: string) => {
+    onChange(`${two} ${letter} ${three} ${iran}`.replace(/\s+/g, ' ').trim())
+  }
+
+  const digitsOnly = (v: string, max: number) => toLatinDigits(v).replace(/\D/g, '').slice(0, max)
+
+  return (
+    <div className="space-y-1.5 col-span-2">
+      <Label className="text-xs">شماره پلاک *</Label>
+
+      <div className="flex items-end gap-2" dir="ltr">
+        <div className="flex flex-col items-center">
+          <span className="text-[10px] text-muted-foreground mb-0.5">دو رقم</span>
+          <Input
+            className="h-10 w-16 text-center text-base font-bold"
+            inputMode="numeric" maxLength={2} placeholder="45"
+            value={p.two}
+            onChange={(e) => emit(digitsOnly(e.target.value, 2), p.letter, p.three, p.iran)}
+          />
+        </div>
+
+        <div className="flex flex-col items-center">
+          <span className="text-[10px] text-muted-foreground mb-0.5">حرف</span>
+          <select
+            className="h-10 w-20 rounded-md border border-input bg-background px-2 text-center text-base font-bold"
+            value={p.letter}
+            onChange={(e) => emit(p.two, e.target.value, p.three, p.iran)}
+          >
+            <option value="">—</option>
+            {PLATE_LETTERS_FA.map((l) => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </div>
+
+        <div className="flex flex-col items-center">
+          <span className="text-[10px] text-muted-foreground mb-0.5">سه رقم</span>
+          <Input
+            className="h-10 w-20 text-center text-base font-bold"
+            inputMode="numeric" maxLength={3} placeholder="923"
+            value={p.three}
+            onChange={(e) => emit(p.two, p.letter, digitsOnly(e.target.value, 3), p.iran)}
+          />
+        </div>
+
+        <div className="flex flex-col items-center">
+          <span className="text-[10px] text-muted-foreground mb-0.5">ایران</span>
+          <Input
+            className="h-10 w-16 text-center text-base font-bold"
+            inputMode="numeric" maxLength={2} placeholder="17"
+            value={p.iran}
+            onChange={(e) => emit(p.two, p.letter, p.three, digitsOnly(e.target.value, 2))}
+          />
+        </div>
+      </div>
+
+      <p className="text-[11px] text-muted-foreground">
+        همان‌طور که روی پلاک نوشته شده وارد کنید. ذخیره‌شده:{' '}
+        <span className="font-mono font-bold">{value || '—'}</span>
+      </p>
     </div>
   )
 }

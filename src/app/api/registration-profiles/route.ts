@@ -123,11 +123,13 @@ export async function POST(request: NextRequest) {
         insuranceAmount: body.insuranceAmount || null,
         paymentMethod: body.paymentMethod || null,
         captchaAnswer: body.captchaAnswer || null,
-        registrationsPerDay: body.registrationsPerDay ?? 10,
-        intervalMinutes: body.intervalMinutes ?? 60,
-        maxRetries: body.maxRetries ?? 3,
-        retryIntervalSec: body.retryIntervalSec ?? 30,
-        priority: body.priority ?? 0,
+        // ?? فقط null/undefined را می‌گیرد؛ اگر رشته‌ی خالی یا NaN بیاید
+        // Prisma خطا می‌دهد، پس عدد را صریح می‌سازیم
+        registrationsPerDay: Number(body.registrationsPerDay) || 10,
+        intervalMinutes: Number(body.intervalMinutes) || 60,
+        maxRetries: Number(body.maxRetries) || 3,
+        retryIntervalSec: Number(body.retryIntervalSec) || 30,
+        priority: Number.isFinite(Number(body.priority)) ? Number(body.priority) : 0,
         notes: body.notes || null,
         status: 'active',
       },

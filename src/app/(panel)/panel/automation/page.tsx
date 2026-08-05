@@ -26,6 +26,7 @@ export default function AutomationCenter() {
   const [accounts, setAccounts] = useState<Array<{ id: string; username: string }>>([])
   const [sessionStatus, setSessionStatus] = useState<Array<{ accountId: string; lastModified: string }>>([])
   const [workers, setWorkers] = useState<Array<{ id: string; name: string; status: string; tasksCompleted: number; tasksFailed: number }>>([])
+  const [profiles, setProfiles] = useState<Array<{ id: string; name: string; plateNumber: string; accountId: string | null }>>([])
   const fetchStatus = useCallback(async () => {
     try {
       const res = await fetch('/api/automation/trigger')
@@ -44,6 +45,17 @@ export default function AutomationCenter() {
     try { const res = await fetch('/api/barbarg-accounts?status=active&limit=100'); const d = await res.json(); setAccounts(Array.isArray(d.data) ? d.data.map((a: { id: string; accountName: string; username: string }) => ({ id: a.id, username: `${a.accountName} (${a.username})` })) : []) } catch {}
   }, [])
 
+  const fetchProfiles = useCallback(async () => {
+    try {
+      const res = await fetch('/api/registration-profiles?status=active&limit=200')
+      const d = await res.json()
+      const list = Array.isArray(d.data) ? d.data : (Array.isArray(d) ? d : [])
+      setProfiles(list.map((p: { id: string; name: string; plateNumber: string; accountId: string | null }) => ({
+        id: p.id, name: p.name, plateNumber: p.plateNumber, accountId: p.accountId,
+      })))
+    } catch { /* ignore */ }
+  }, [])
+
   const fetchWorkers = useCallback(async () => {
     try { const res = await fetch('/api/automation/workers'); const d = await res.json(); setWorkers(d.workers || []) } catch {}
   }, [])
@@ -52,8 +64,9 @@ export default function AutomationCenter() {
     fetchStatus()
     fetchSessions()
     fetchAccounts()
+    fetchProfiles()
     fetchWorkers()
-  }, [fetchStatus, fetchSessions, fetchAccounts, fetchWorkers])
+  }, [fetchStatus, fetchSessions, fetchAccounts, fetchProfiles, fetchWorkers])
 
   usePolling(fetchStatus, 5000)
 
@@ -128,7 +141,28 @@ export default function AutomationCenter() {
                   {accounts.map((a) => <option key={a.id} value={a.id}>{a.username}</option>)}
                 </select>
               </div>
-              <div className="space-y-2"><Label>شماره پلاک</Label><Input value={plateNumber} onChange={(e) => setPlateNumber(e.target.value)} placeholder="۱۲ الف ۴۵۶۷۸" /></div>
+              <div className="space-y-2">
+                <Label>پلاک (از پروفایل‌ها)</Label>
+                <select
+                  className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
+                  value={plateNumber}
+                  onChange={(e) => {
+                    setPlateNumber(e.target.value)
+                    const pr = profiles.find((x) => x.plateNumber === e.target.value)
+                    if (pr?.accountId) setSelectedAccountId(pr.accountId)
+                  }}
+                >
+                  <option value="">— انتخاب پلاک —</option>
+                  {profiles.map((p) => (
+                    <option key={p.id} value={p.plateNumber}>{p.plateNumber} — {p.name}</option>
+                  ))}
+                </select>
+                {profiles.length === 0 && (
+                  <p className="text-[11px] text-destructive">
+                    پروفایل فعالی نیست. اول از «پروفایل‌ها» یکی بسازید.
+                  </p>
+                )}
+              </div>
               <div className="space-y-2"><Label>تعداد</Label><Input type="number" value={targetCount} onChange={(e) => setTargetCount(parseInt(e.target.value) || 1)} min={1} /></div>
               <div className="flex items-end"><Button onClick={handleTrigger} className="w-full"><Zap className="size-4 ml-2" /> افزودن به صف</Button></div>
             </div>

@@ -30,7 +30,15 @@ export async function GET() {
     const engine = getAutomationEngine()
     return NextResponse.json({
       status: { running: engine.isRunning(), paused: engine.isPaused() },
-      queue: { waiting: pendingJobs + queueStats.waiting, active: activeJobs + queueStats.active, completed: completedJobs + queueStats.completed, failed: failedJobs + queueStats.failed },
+      /* ⚠ دیتابیس و Redis دو نمای از یک چیزند، نه دو چیز جدا.
+         جمع کردنشان باعث می‌شد یک جاب دو بار شمرده شود — مثلا «۱ در حال اجرا»
+         در حالی که صف وظایف خالی بود. دیتابیس مرجع است. */
+      queue: {
+        waiting: Math.max(pendingJobs, queueStats.waiting),
+        active: Math.max(activeJobs, queueStats.active),
+        completed: completedJobs,
+        failed: failedJobs,
+      },
       logs: recentLogs.map((l) => ({ id: l.id, jobId: l.jobId, level: l.level, message: l.message, timestamp: l.createdAt.toISOString(), jobType: l.job?.type })),
     })
   } catch {
@@ -46,16 +54,16 @@ export async function POST(request: NextRequest) {
 
     switch (body.action) {
       case 'start': {
+        // فقط موتور را روشن می‌کند؛ دیگر «جاب تستی» با پلاک الکی نمی‌سازد.
+        // ثبت واقعی از طریق «افزودن به صف» انجام می‌شود.
         await engine.start()
-        // Create a test job and process it to actually launch the browser
-        const testJob = await prisma.job.create({ data: { type: 'REGISTER_WAYBILL', status: 'pending', priority: 0, attempts: 0, maxRetries: 3 } })
-        await automationQueue.add('process-waybill', {
-          taskId: testJob.id, plateNumber: 'تست', accountId: 'default', jobIndex: 0, totalJobs: 1,
-        }).catch(() => {
-          engine.processTask(testJob.id).catch(() => {})
+        await prisma.activityLog.create({
+          data: { action: 'bot_started', resource: 'automation', details: {} },
         })
-        await prisma.activityLog.create({ data: { action: 'bot_started', resource: 'automation', details: { jobId: testJob.id } } })
-        return NextResponse.json({ success: true, message: 'بات شروع شد' })
+        return NextResponse.json({
+          success: true,
+          message: 'بات فعال شد — حالا از «افزودن به صف» ثبت را شروع کنید',
+        })
       }
       case 'stop': { engine.stop(); return NextResponse.json({ success: true, message: 'بات متوقف شد' }) }
       case 'pause': { engine.pause(); return NextResponse.json({ success: true, message: 'متوقف موقت' }) }
@@ -94,16 +102,52 @@ export async function POST(request: NextRequest) {
 
           const target = normalise(plateNumber)
 
-          const candidates = await prisma.registrationProfile.findMany({
-            where: {
-              status: 'active',
-              ...(accountId && accountId !== 'default' ? { accountId } : {}),
-            },
+          // همه‌ی پروفایل‌های فعال را می‌گیریم و بعد فیلتر می‌کنیم.
+          // فیلتر کردن accountId در کوئری باعث می‌شد پروفایل‌هایی که
+          // حسابشان تعیین نشده (accountId = null) هرگز پیدا نشوند.
+          const activeProfiles = await prisma.registrationProfile.findMany({
+            where: { status: 'active' },
           })
 
-          profile = candidates.find((p) => normalise(p.plateNumber) === target)
-                 || candidates.find((p) => normalise(p.plateNumber).includes(target))
-                 || null
+          const byPlate = activeProfiles.filter(
+            (p) => normalise(p.plateNumber) === target,
+          )
+          const byPlateLoose = byPlate.length
+            ? byPlate
+            : activeProfiles.filter((p) => normalise(p.plateNumber).includes(target))
+
+          const wantAccount = accountId && accountId !== 'default' ? accountId : null
+
+          profile =
+            // ۱) هم پلاک هم حساب مطابق
+            (wantAccount ? byPlateLoose.find((p) => p.accountId === wantAccount) : null)
+            // ۲) پلاک مطابق و پروفایل حساب ندارد (بعدا وصلش می‌کنیم)
+            || byPlateLoose.find((p) => !p.accountId)
+            // ۳) فقط پلاک مطابق
+            || byPlateLoose[0]
+            || null
+
+          // اگر پروفایل حساب نداشت ولی کاربر حساب انتخاب کرده، همان را ثبت کن
+          if (profile && !profile.accountId && wantAccount) {
+            await prisma.registrationProfile.update({
+              where: { id: profile.id },
+              data: { barbargAccount: { connect: { id: wantAccount } } },
+            }).catch(() => { /* اختیاری است */ })
+            profile = { ...profile, accountId: wantAccount }
+          }
+
+          if (!profile) {
+            const all = await prisma.registrationProfile.findMany({
+              select: { name: true, plateNumber: true, status: true },
+              take: 10,
+            })
+            const list = all.length
+              ? all.map((p) => `«${p.plateNumber}»${p.status !== 'active' ? ' (غیرفعال)' : ''}`).join('، ')
+              : 'هیچ پروفایلی ثبت نشده'
+            return NextResponse.json({
+              error: `پروفایلی با پلاک «${plateNumber}» پیدا نشد. پلاک‌های موجود: ${list}`,
+            }, { status: 404 })
+          }
         }
 
         if (!profile) {

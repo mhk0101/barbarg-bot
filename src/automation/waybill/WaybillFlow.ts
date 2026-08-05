@@ -1,6 +1,7 @@
 import type { Page } from 'playwright'
 import { browserManager } from '../browser/BrowserManager'
 import { captchaSolver } from '../captcha/CaptchaSolver'
+import { waitForSwalError, readSwalError, SWAL_ERROR_MARK } from '../browser/Resilience'
 import type { WaybillData } from '../interfaces'
 
 const SITE_URL = 'https://barname.utcms.ir'
@@ -22,28 +23,21 @@ export class WaybillFlow {
   }
 
   private async waitForPageReady(): Promise<void> {
-    // Wait for loading overlay to disappear
-    try {
-      await this.page.waitForFunction(() => {
-        const loading = document.getElementById('loading')
-        if (!loading) return true
-        const style = window.getComputedStyle(loading)
-        return style.display === 'none' || style.visibility === 'hidden' || loading.offsetParent === null
-      }, { timeout: 15000 })
-    } catch {
-      // Force remove loading overlay if it doesn't disappear
-      await this.page.evaluate(() => {
-        const loading = document.getElementById('loading')
-        if (loading) {
-          loading.style.display = 'none'
-          loading.style.visibility = 'hidden'
-          loading.style.pointerEvents = 'none'
-          loading.remove()
-        }
+    // مثل تستر: بی‌درنگ overlay را حذف می‌کنیم به‌جای انتظار ۱۵ ثانیه‌ای.
+    // این لایه روی کل صفحه می‌افتد و همه‌ی کلیک‌ها/تایپ‌ها را می‌بلعد.
+    await this.page.evaluate(() => {
+      const loading = document.getElementById('loading')
+      if (loading) loading.remove()
+      // هر overlay تمام‌صفحه‌ی دیگر که ممکن است جلوی کلیک را بگیرد
+      document.querySelectorAll('.blockUI, .loading-overlay, .page-loader').forEach((el) => {
+        (el as HTMLElement).remove()
       })
-    }
-    await this.page.waitForTimeout(1000)
+    }).catch(() => { /* ignore */ })
+
+    // صبر کوتاه تا رندر پایدار شود
+    await this.page.waitForTimeout(400)
   }
+
 
   async navigateToCreate(): Promise<boolean> {
     const urls = [
@@ -79,23 +73,36 @@ export class WaybillFlow {
       ['فرستنده', () => this.fillStep1Sender(data)],
       ['گیرنده', () => this.fillStep2Receiver(data)],
       ['خودرو/راننده', () => this.fillStep3VehicleDriver(data)],
-      ['بار', () => this.fillStep4Cargo(data)],
-      ['کرایه/مسیر', () => this.fillStep5FareRoute(data)],
+      ['کالا', () => this.fillStep4Cargo(data)],
+      ['مبدا', () => this.fillStep5Origin(data)],
+      ['مقصد', () => this.fillStep6Destination(data)],
+      ['بازبینی مسیر', () => this.fillStep7Review()],
+      ['کرایه', () => this.fillStep8Fare(data)],
     ]
 
     await this.page.waitForTimeout(1000 + Math.random() * 2000)
 
     for (const [name, fn] of steps) {
       try {
+        // پیش از هر گام صفحه را تمیز کن (تستر هم همین کار را می‌کند)
+        await this.waitForPageReady()
         await fn()
         await opts?.onStep?.(name, true)
+        // مکث انسانی بین گام‌ها
+        await this.page.waitForTimeout(400 + Math.random() * 500)
       } catch (e) {
         await opts?.onStep?.(name, false, e)
+        // دلیل واقعی شکست را نگه می‌داریم تا در لاگ دیده شود
+        this.lastError = `گام «${name}»: ${e instanceof Error ? e.message : String(e)}`
         return false
       }
     }
+    this.lastError = ''
     return true
   }
+
+  /** آخرین دلیل شکست fillForm (برای گزارش دقیق در لاگ) */
+  public lastError = ''
 
   /**
    * گام ۱ — مشخصات فرستنده  (tab: #pills-1)
@@ -180,39 +187,171 @@ export class WaybillFlow {
     await this.waitForTabActive('pills-3')
   }
 
+  /**
+   * گام ۳ — راننده و خودرو  (tab: #pills-3)
+   *
+   * دو حالت:
+   *   A «تجمیعی» (#frmpelaqTajmi): پلاک از #PelakComboTajmi و راننده از
+   *     #DriverListTajmi انتخاب می‌شوند. مقدار هر آپشن پلاک یک JSON است
+   *     که شامل irTagPart1..4 می‌شود.
+   *   B «دستی» (#frmpelaq): اجزای پلاک تایپ می‌شوند و کد ملی راننده در
+   *     #txtDriverSearch وارد می‌شود.
+   */
   private async fillStep3VehicleDriver(data: WaybillData): Promise<void> {
-    // سایت جدید: در مرحله سوم، خودرو و راننده باید از «لیست ثبت‌شده» انتخاب شوند
-    // (dropdown/combobox) و دیگر تایپ دستی مشخصات وجود ندارد.
-    //  • خودرو با تطبیق «پلاک» انتخاب می‌شود.
-    //  • راننده با تطبیق «نام» یا «کد ملی» انتخاب می‌شود.
     await this.waitForPageReady()
 
-    const vehicleOk = await this.selectFromRegisteredList({
-      labelKeywords: ['خودرو', 'وسیله', 'ناوگان', 'پلاک'],
-      nativeSelectors: ['#VehicleId', '#Vehicle', '#VehicleSelect', '[name="VehicleId"]', '[name="Vehicle"]'],
-      customTriggerSelectors: ['#VehicleId', '#Vehicle', '.vehicle-select', '[data-field="vehicle"]'],
-      queries: [data.plateNumber, data.vehicleSerialNumber || ''].filter(Boolean),
-    })
-    if (!vehicleOk) {
-      throw new Error('انتخاب خودرو از لیست ناموفق بود — پلاک را در فهرست ثبت‌شده پیدا نکردم (پلاک/سلکتور را بررسی کنید)')
+    const parts = WaybillFlow.parsePlate(data.plateNumber)
+    if (!parts) throw new Error(`پلاک «${data.plateNumber}» قابل تجزیه نیست (قالب مورد انتظار: 45 ع 923 17)`)
+
+    const mode = await this.page.evaluate(() => {
+      const vis = (el: HTMLElement | null) => {
+        if (!el) return false
+        if (el.classList.contains('d-none')) return false
+        const s = getComputedStyle(el)
+        return s.display !== 'none' && s.visibility !== 'hidden'
+      }
+      return {
+        tajmi: vis(document.getElementById('frmpelaqTajmi')),
+        manual: vis(document.getElementById('frmpelaq')),
+      }
+    }).catch(() => ({ tajmi: false, manual: false }))
+
+    if (mode.tajmi) {
+      // مکث پیش از انتخاب پلاک — فهرست با AJAX پر می‌شود
+      await this.page.waitForTimeout(3000)
+
+      // اگر هنوز نیامده، تا ۱۲ ثانیه‌ی دیگر منتظر بمان
+      for (let i = 0; i < 24; i++) {
+        const n = await this.page.evaluate(() =>
+          document.querySelectorAll('#PelakComboTajmi option').length).catch(() => 0)
+        if (n > 1) break
+        await this.page.waitForTimeout(500)
+      }
+
+      // ---- انتخاب پلاک از لیست ----
+      const picked = await this.page.evaluate((want: string[]) => {
+        const sel = document.getElementById('PelakComboTajmi') as HTMLSelectElement | null
+        if (!sel) return null
+        const digits = (t: string) => String(t)
+          .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+          .replace(/\D/g, '')
+        const apply = (o: HTMLOptionElement) => {
+          sel.value = o.value
+          sel.dispatchEvent(new Event('change', { bubbles: true }))
+          const w = window as unknown as { jQuery?: (x: unknown) => { val: (v: string) => { trigger: (e: string) => void } } }
+          if (w.jQuery) { try { w.jQuery(sel).val(o.value).trigger('change') } catch { /* ignore */ } }
+          return (o.textContent || '').trim()
+        }
+        for (const o of Array.from(sel.options)) {
+          if (!o.value) continue
+          try {
+            const j = JSON.parse(o.value)
+            if (String(j.irTagPart1) === want[0] && String(j.irTagPart4) === want[1] && String(j.irTagPart2) === want[2]) {
+              return apply(o)
+            }
+          } catch { /* not json */ }
+          const d = digits(o.textContent || '')
+          if (want.every((w2) => d.includes(w2))) return apply(o)
+        }
+        return null
+      }, [parts.two, parts.three, parts.iran]).catch(() => null)
+
+      if (!picked) {
+        // ممکن است فهرست هنوز از سرور نیامده باشد یا سایت خطا داده باشد
+        const swal = await waitForSwalError(this.page, 2500)
+        const count = await this.page.evaluate(() =>
+          document.querySelectorAll('#PelakComboTajmi option').length).catch(() => 0)
+        if (swal) {
+          throw new Error(`${SWAL_ERROR_MARK} ${swal}`)
+        }
+        if (count <= 1) {
+          // فهرست خالی است ⇒ مشکل موقتی سمت سایت، قابل تلاش مجدد
+          throw new Error(`${SWAL_ERROR_MARK} فهرست پلاک‌ها خالی است (سایت پاسخ نداد)`)
+        }
+        throw new Error(`پلاک «${data.plateNumber}» در فهرست ناوگان این حساب نیست — ابتدا در سامانه ثبت شود`)
+      }
+
+      // لیست راننده با AJAX پر می‌شود
+      await this.page.waitForTimeout(1500)
+      for (let i = 0; i < 12; i++) {
+        const n = await this.page.evaluate(() =>
+          document.querySelectorAll('#DriverListTajmi option').length).catch(() => 0)
+        if (n > 1) break
+        await this.page.waitForTimeout(500)
+      }
+
+      const drv = await this.page.evaluate(({ name, nid }: { name: string; nid: string }) => {
+        const sel = document.getElementById('DriverListTajmi') as HTMLSelectElement | null
+        if (!sel) return null
+        const clean = (t: string) => String(t).replace(/[\u200c\s]+/g, ' ').trim()
+        const target = clean(name)
+        let hit: HTMLOptionElement | null = null
+        for (const o of Array.from(sel.options)) {
+          if (!o.value || o.value === '0') continue
+          const t = clean(o.textContent || '')
+          if (t === target || t.includes(target) || (nid && (o.value.includes(nid) || t.includes(nid)))) { hit = o; break }
+        }
+        if (!hit) {
+          const real = Array.from(sel.options).filter((o) => o.value && o.value !== '0')
+          if (real.length === 1) hit = real[0]
+        }
+        if (!hit) return null
+        sel.value = hit.value
+        sel.dispatchEvent(new Event('change', { bubbles: true }))
+        const w = window as unknown as { jQuery?: (x: unknown) => { val: (v: string) => { trigger: (e: string) => void } } }
+        if (w.jQuery) { try { w.jQuery(sel).val(hit.value).trigger('change') } catch { /* ignore */ } }
+        return clean(hit.textContent || '')
+      }, { name: data.driverName ?? '', nid: data.driverNationalId ?? '' }).catch(() => null)
+
+      if (!drv) {
+        const swal = await waitForSwalError(this.page, 2000)
+        const dcount = await this.page.evaluate(() =>
+          document.querySelectorAll('#DriverListTajmi option').length).catch(() => 0)
+        if (swal) throw new Error(`${SWAL_ERROR_MARK} ${swal}`)
+        if (dcount <= 1) throw new Error(`${SWAL_ERROR_MARK} فهرست رانندگان خالی است (سایت پاسخ نداد)`)
+        throw new Error(`راننده «${data.driverName}» در فهرست این پلاک نیست`)
+      }
+      await this.page.waitForTimeout(1000)
+    } else if (mode.manual) {
+      // ---- ورود دستی ----
+      const letter = WaybillFlow.PLATE_LETTERS[parts.letter]
+      await this.fillVisibleFields([
+        { selectors: ['#pelakIrNum'], value: parts.two },
+        { selectors: ['#pelakCenter'], value: parts.three },
+      ])
+      if (letter) await this.selectByValue('#pelakCombo', letter)
+      await this.fillVisibleFields([
+        { selectors: ['#pelakFirst'], value: parts.iran },
+        { selectors: ['#txtDriverSearch'], value: data.driverNationalId || '' },
+      ])
+      await this.page.waitForTimeout(1500)
+    } else {
+      throw new Error('فرم پلاک در گام ۳ قابل مشاهده نیست')
     }
 
-    // انتخاب خودرو ممکن است فهرست راننده‌ها را از سرور بارگذاری کند
-    await this.waitForPageReady()
-    await this.page.waitForTimeout(800)
+    await this.clickStepNext('#btnGoLVL4', '#pills-4-tab')
+    await this.waitForTabActive('pills-4')
+  }
 
-    const driverOk = await this.selectFromRegisteredList({
-      labelKeywords: ['راننده'],
-      nativeSelectors: ['#DriverId', '#Driver', '#DriverSelect', '[name="DriverId"]', '[name="Driver"]'],
-      customTriggerSelectors: ['#DriverId', '#Driver', '.driver-select', '[data-field="driver"]'],
-      queries: [data.driverName, data.driverNationalId || ''].filter(Boolean),
-    })
-    if (!driverOk) {
-      throw new Error('انتخاب راننده از لیست ناموفق بود — نام/کد ملی را در فهرست ثبت‌شده پیدا نکردم (داده/سلکتور را بررسی کنید)')
-    }
+  /** حروف مجاز پلاک → value در #pelakCombo */
+  private static readonly PLATE_LETTERS: Record<string, string> = {
+    'الف': '1', 'ب': '2', 'پ': '3', 'ت': '4', 'ث': '5', 'ج': '6', 'چ': '7', 'ح': '8',
+    'خ': '9', 'د': '10', 'ذ': '11', 'ر': '12', 'ز': '13', 'ژ': '14', 'س': '15', 'ش': '16',
+    'ص': '17', 'ض': '18', 'ط': '19', 'ظ': '20', 'ع': '21', 'غ': '22', 'ف': '23', 'ق': '24',
+    'ک': '25', 'گ': '26', 'ل': '27', 'م': '28', 'ن': '29', 'و': '30', 'ه': '31', 'ی': '32',
+  }
 
-    await this.clickNext()
-    await this.page.waitForTimeout(1500)
+  /** «45 ع 923 17» → { two:'45', letter:'ع', three:'923', iran:'17' } */
+  private static parsePlate(v?: string): { two: string; letter: string; three: string; iran: string } | null {
+    if (!v) return null
+    const s = String(v)
+      .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+      .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+      .replace(/ايران|ایران/g, ' ')
+      .trim()
+    const m = s.match(/(\d{2})\s*[-\s]?\s*([\u0600-\u06FF]+)\s*[-\s]?\s*(\d{3})\s*[-\s]?\s*(\d{2})/)
+    if (!m) return null
+    return { two: m[1], letter: m[2].trim(), three: m[3], iran: m[4] }
   }
 
   /**
@@ -356,35 +495,303 @@ export class WaybillFlow {
     return false
   }
 
+  /**
+   * گام ۴ — مشخصات کالا  (tab: #pills-4)
+   *
+   * جریان متفاوت: کالا از طریق یک «مودال» اضافه می‌شود.
+   *   ۱) #btnAddLoad → مودال باز می‌شود
+   *   ۲) #txtLoadName یک autocomplete است؛ باید از لیست انتخاب شود
+   *   ۳) #txtWeight (تن) | #ddBoxType | #txtBoxNum | #txtLoadDetail
+   *   ۴) #btnInsertLoad → ردیف در #gridfullLoaddata
+   *   ۵) #txtLoadsValue (ارزش ریالی) → #btnGoLVL5
+   */
   private async fillStep4Cargo(data: WaybillData): Promise<void> {
-    await this.fillFields([
-      { selectors: ['#CargoName', '#cargoName', '[name="CargoName"]'], value: data.cargoName },
-      { selectors: ['#CargoPackaging', '#cargoPackaging', '[name="CargoPackaging"]'], value: data.cargoPackaging || '' },
-      { selectors: ['#CargoWeight', '#cargoWeight', '[name="CargoWeight"]'], value: data.cargoWeight || '' },
-      { selectors: ['#CargoQuantity', '#cargoQuantity', '[name="CargoQuantity"]'], value: data.cargoQuantity || '' },
-    ])
-    await this.clickNext()
-    await this.page.waitForTimeout(1500)
-  }
+    await this.waitForPageReady()
 
-  private async fillStep5FareRoute(data: WaybillData): Promise<void> {
-    await this.fillFields([
-      { selectors: ['#AdvanceFare', '#advanceFare', '[name="AdvanceFare"]'], value: data.advanceFare || '' },
-      { selectors: ['#FareAmount', '#fareAmount', '[name="FareAmount"]'], value: data.freightCost || '' },
-      { selectors: ['#TransportInsurance', '#transportInsurance', '[name="TransportInsurance"]'], value: data.transportInsurance || '' },
-      { selectors: ['#TotalAmount', '#totalAmount', '[name="TotalAmount"]'], value: data.totalAmount || '' },
-      { selectors: ['#InsuranceRate', '#insuranceRate', '[name="InsuranceRate"]'], value: data.insuranceRate || '' },
-      { selectors: ['#InsuranceAmount', '#insuranceAmount', '[name="InsuranceAmount"]'], value: data.insuranceAmount || '' },
-    ])
-    if (data.fareType) {
-      await this.selectDropdown(['#FareType', '[name="FareType"]'], data.fareType)
+    if (!data.cargoName) throw new Error('نام کالا در پروفایل تعیین نشده است')
+
+    // ۱) باز کردن مودال
+    const addBtn = await this.page.$('#btnAddLoad')
+    if (!addBtn) throw new Error('دکمه «افزودن کالای جدید» پیدا نشد')
+    await addBtn.click().catch(() => { /* ignore */ })
+
+    let open = false
+    for (let i = 0; i < 20; i++) {
+      await this.page.waitForTimeout(300)
+      open = await this.page.evaluate(() => {
+        const el = document.getElementById('txtLoadName')
+        return !!(el && (el as HTMLElement).offsetParent !== null)
+      }).catch(() => false)
+      if (open) break
     }
-    await this.clickNext()
-    await this.page.waitForTimeout(2000)
+    if (!open) throw new Error('مودال «ثبت کالا» باز نشد')
+    await this.page.waitForTimeout(400)
+
+    // ۲) نام کالا از autocomplete
+    const nameEl = await this.page.$('#txtLoadName')
+    if (!nameEl) throw new Error('فیلد نام کالا پیدا نشد')
+    await nameEl.click({ clickCount: 3 }).catch(() => { /* ignore */ })
+    await nameEl.fill('')
+    await nameEl.type(data.cargoName, { delay: 110 })
+    await this.page.evaluate(() => {
+      const i = document.getElementById('txtLoadName')
+      if (!i) return
+      i.dispatchEvent(new Event('input', { bubbles: true }))
+      i.dispatchEvent(new Event('keyup', { bubbles: true }))
+      const w = window as unknown as { jQuery?: (x: unknown) => { trigger: (e: string) => { trigger: (e2: string) => void } } }
+      if (w.jQuery) { try { w.jQuery(i).trigger('keydown').trigger('keyup') } catch { /* ignore */ } }
+    }).catch(() => { /* ignore */ })
+
+    let picked: string | null = null
+    for (let i = 0; i < 24; i++) {
+      await this.page.waitForTimeout(300)
+      picked = await this.page.evaluate((want: string) => {
+        const lists = document.querySelectorAll('ul.ui-autocomplete, .ui-menu')
+        for (const ul of Array.from(lists)) {
+          if ((ul as HTMLElement).offsetParent === null) continue
+          const items = Array.from(ul.querySelectorAll('li'))
+            .filter((li) => ((li as HTMLElement).innerText || '').trim())
+          if (!items.length) continue
+          const exact = items.find((li) => ((li as HTMLElement).innerText || '').trim() === want)
+          const target = (exact || items[0]) as HTMLElement
+          const a = (target.querySelector('a') || target) as HTMLElement
+          a.click()
+          return (target.innerText || '').trim()
+        }
+        return null
+      }, data.cargoName).catch(() => null)
+      if (picked) break
+    }
+    await this.page.waitForTimeout(500)
+
+    // ۳) وزن / بسته‌بندی / تعداد
+    await this.fillVisibleFields([
+      { selectors: ['#txtWeight'], value: data.cargoWeight || '' },
+    ])
+
+    const boxVal = WaybillFlow.BOX_TYPES[data.cargoPackaging ?? ''] ?? WaybillFlow.BOX_TYPES['سایر']
+    await this.selectByValue('#ddBoxType', boxVal)
+
+    await this.fillVisibleFields([
+      { selectors: ['#txtBoxNum'], value: data.cargoQuantity || '' },
+    ])
+
+    // ۴) ثبت کالا
+    const insBtn = await this.page.$('#btnInsertLoad')
+    if (!insBtn) throw new Error('دکمه «ثبت کالای جدید» پیدا نشد')
+    await insBtn.click().catch(() => { /* ignore */ })
+    await this.page.waitForTimeout(1500)
+
+    let rows = 0
+    for (let i = 0; i < 16; i++) {
+      rows = await this.page.evaluate(() =>
+        document.querySelectorAll('#gridfullLoaddata tr').length).catch(() => 0)
+      if (rows > 0) break
+      await this.page.waitForTimeout(400)
+    }
+    if (rows === 0) {
+      const errs = await this.readFieldErrors()
+      throw new Error(
+        `کالا به جدول اضافه نشد${picked ? '' : ' (نام کالا از لیست پیشنهادی انتخاب نشد)'}` +
+        (errs.length ? ` — ${errs.join(' | ')}` : ''),
+      )
+    }
+
+    // بستن مودال در صورت باز ماندن
+    await this.page.evaluate(() => {
+      const b = document.querySelector('.modal.show [data-bs-dismiss="modal"]') as HTMLElement | null
+      if (b) b.click()
+    }).catch(() => { /* ignore */ })
+    await this.page.waitForTimeout(700)
+
+    // ۵) ارزش بار
+    await this.fillVisibleFields([
+      { selectors: ['#txtLoadsValue'], value: data.cargoValue || '' },
+    ])
+
+    await this.clickStepNext('#btnGoLVL5', '#pills-5-tab')
+    await this.waitForTabActive('pills-5')
   }
 
+  /** نوع بسته‌بندی → value در #ddBoxType */
+  private static readonly BOX_TYPES: Record<string, string> = {
+    'کارتن': '8', 'جعبه': '9', 'کیسه': '10', 'گونی': '11', 'جامبو': '12',
+    'بشکه': '18072', 'رول': '18073', 'فله': '18074', 'عدل': '18075',
+    'شاخه': '18076', 'سایر': '18077',
+  }
+
+  /**
+   * گام ۵ — مبدا بارگیری  (tab: #pills-5)
+   * گام ۶ — مقصد تخلیه    (tab: #pills-6)
+   *
+   * سایت پیش‌فرض حالت «نقشه» را نشان می‌دهد و بخش ورود دستی
+   * (#normalmabda / #normalmagsad) کلاس d-none دارد؛ نمایانش می‌کنیم.
+   * فهرست شهر با AJAX پس از انتخاب استان پر می‌شود.
+   */
+  private async fillLocation(
+    kind: 'origin' | 'dest',
+    loc: { province?: string; city?: string; address?: string; postalCode?: string },
+  ): Promise<void> {
+    const cfg = kind === 'origin'
+      ? { wrap: 'normalmabda', state: '#ddStateSource', city: '#ddCitySource',
+          postal: '#sourcePostalCode', addr: '#txtAddressSource', next: '#btnGoLVL6',
+          tab: '#pills-6-tab', pane: 'pills-6', label: 'مبدا' }
+      : { wrap: 'normalmagsad', state: '#ddStateDest', city: '#ddCityDest',
+          postal: '#destPostalCode', addr: '#txtAddressDest', next: '#btnGoLVL7',
+          tab: '#pills-7-tab', pane: 'pills-7', label: 'مقصد' }
+
+    await this.waitForPageReady()
+
+    if (!loc.province) throw new Error(`استان ${cfg.label} تعیین نشده است`)
+    if (!loc.city) throw new Error(`شهر ${cfg.label} تعیین نشده است`)
+    if (!loc.address) throw new Error(`آدرس ${cfg.label} تعیین نشده است`)
+
+    await this.page.evaluate((id) => {
+      const el = document.getElementById(id)
+      if (el) { el.classList.remove('d-none'); el.classList.remove('hidden') }
+    }, cfg.wrap).catch(() => { /* ignore */ })
+    await this.page.waitForTimeout(300)
+
+    const pv = WaybillFlow.PROVINCES[loc.province]
+    if (!pv) throw new Error(`استان «${loc.province}» در فهرست سایت نیست`)
+    await this.selectByValue(cfg.state, pv)
+    await this.page.waitForTimeout(800)
+
+    // صبر تا فهرست شهر با AJAX پر شود
+    for (let i = 0; i < 20; i++) {
+      const n = await this.page.evaluate((sel) =>
+        document.querySelectorAll(sel + ' option').length, cfg.city).catch(() => 0)
+      if (n > 1) break
+      await this.page.waitForTimeout(400)
+    }
+
+    const picked = await this.page.evaluate(({ sel, want }: { sel: string; want: string }) => {
+      const el = document.querySelector(sel) as HTMLSelectElement | null
+      if (!el) return null
+      const clean = (t: string) => String(t).replace(/[\u200c\s]+/g, ' ').trim()
+      const target = clean(want)
+      let hit: HTMLOptionElement | null = null
+      for (const o of Array.from(el.options)) {
+        if (o.value && clean(o.textContent || '') === target) { hit = o; break }
+      }
+      if (!hit) for (const o of Array.from(el.options)) {
+        if (o.value && clean(o.textContent || '').includes(target)) { hit = o; break }
+      }
+      if (!hit) return null
+      el.value = hit.value
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+      const w = window as unknown as { jQuery?: (x: unknown) => { val: (v: string) => { trigger: (e: string) => void } } }
+      if (w.jQuery) { try { w.jQuery(el).val(hit.value).trigger('change') } catch { /* ignore */ } }
+      return clean(hit.textContent || '')
+    }, { sel: cfg.city, want: loc.city }).catch(() => null)
+
+    if (!picked) throw new Error(`شهر «${loc.city}» در استان «${loc.province}» یافت نشد`)
+
+    const fields: Array<{ selectors: string[]; value: string }> = []
+    if (loc.postalCode) fields.push({ selectors: [cfg.postal], value: loc.postalCode })
+    fields.push({ selectors: [cfg.addr], value: loc.address })
+    await this.fillVisibleFields(fields)
+
+    await this.clickStepNext(cfg.next, cfg.tab)
+    await this.waitForTabActive(cfg.pane)
+  }
+
+  private async fillStep5Origin(data: WaybillData): Promise<void> {
+    await this.fillLocation('origin', {
+      province: data.originProvince, city: data.originCity,
+      address: data.originAddress, postalCode: data.originPostalCode,
+    })
+  }
+
+  private async fillStep6Destination(data: WaybillData): Promise<void> {
+    await this.fillLocation('dest', {
+      province: data.destProvince, city: data.destCity,
+      address: data.destAddress, postalCode: data.destPostalCode,
+    })
+  }
+
+  /** گام ۷ — فقط نمایش؛ دکمه‌ی بعدی id ندارد */
+  private async fillStep7Review(): Promise<void> {
+    await this.waitForPageReady()
+    const ok = await this.page.evaluate(() => {
+      const b = document.querySelector('#pills-7 button.btn-next[data-to="#pills-8-tab"]') as HTMLElement | null
+      if (!b) return false
+      b.click()
+      return true
+    }).catch(() => false)
+    if (!ok) throw new Error('دکمه‌ی «مرحله بعد» در گام ۷ پیدا نشد')
+    await this.waitForTabActive('pills-8')
+  }
+
+  /** گام ۸ — کرایه و صدور سند */
+  private async fillStep8Fare(data: WaybillData): Promise<void> {
+    await this.waitForPageReady()
+
+    if (!data.freightCost) throw new Error('مبلغ کرایه در پروفایل تعیین نشده است')
+
+    await this.fillVisibleFields([{ selectors: ['#txtkeraye'], value: data.freightCost }])
+    if (data.advanceFare) {
+      await this.fillVisibleFields([{ selectors: ['#txtPishKeraye'], value: data.advanceFare }])
+    }
+    if (data.loadingTime) {
+      await this.fillVisibleFields([{ selectors: ['#loadingTime'], value: data.loadingTime }])
+    }
+
+    const btn = await this.page.$('#btnregisterbarname')
+    if (!btn) throw new Error('دکمه «ثبت بارنامه» پیدا نشد')
+    await btn.click().catch(() => { /* ignore */ })
+    await this.page.waitForTimeout(2000)
+    await this.waitForTabActive('pills-9')
+  }
+
+  /**
+   * گام ۹ — تایید نهایی: کپچای دوم را حل می‌کند و سند را ثبت می‌کند.
+   * کد رهگیری را برمی‌گرداند.
+   */
+  private async fillStep9Confirm(): Promise<string> {
+    await this.waitForPageReady()
+
+    const cap = await captchaSolver.solveAndFill(this.page)
+    if (!cap.filled) {
+      for (let i = 0; i < 4 && !cap.filled; i++) {
+        await captchaSolver.refreshCaptcha(this.page)
+        const again = await captchaSolver.solveAndFill(this.page)
+        if (again.filled) break
+        if (i === 3) throw new Error('کپچای گام نهایی حل نشد')
+      }
+    }
+
+    const btn = await this.page.$('#btnRegisterFinished')
+    if (!btn) throw new Error('دکمه «ثبت نهایی سند حمل» پیدا نشد')
+    await btn.click().catch(() => { /* ignore */ })
+
+    // پس از کلیک، یا کد رهگیری می‌آید یا پاپ‌آپ خطا ظاهر می‌شود.
+    // پاپ‌آپ فقط چند ثانیه می‌ماند، پس همزمان هر دو را می‌پاییم.
+    for (let i = 0; i < 40; i++) {
+      const code = await this.page.evaluate(() =>
+        (document.getElementById('TrackingCodeNumber') as HTMLInputElement | null)?.value || '',
+      ).catch(() => '')
+      if (code) return code
+
+      const swal = await readSwalError(this.page)
+      if (swal) {
+        // خطای سمت سرور ⇒ قابل تلاش مجدد (لایه‌ی بالاتر صبر می‌کند)
+        throw new Error(`${SWAL_ERROR_MARK} هنگام ثبت نهایی: ${swal}`)
+      }
+
+      await this.page.waitForTimeout(500)
+    }
+
+    const errs = await this.readFieldErrors()
+    throw new Error(`کد رهگیری دریافت نشد${errs.length ? ` — ${errs.join(' | ')}` : ''}`)
+  }
+
+  /**
+   * کپچای صفحه‌ی فعلی را حل می‌کند (اگر وجود داشته باشد).
+   * در ویزارد جدید کپچا فقط در گام ۹ ظاهر می‌شود، پس در گام‌های
+   * قبلی این متد بی‌صدا موفق برمی‌گردد.
+   */
   async handleCaptcha(): Promise<{ solved: boolean; needsManual: boolean; screenshotPath?: string }> {
-    // اگر اصلاً کپچایی در این صفحه نیست، کاری لازم نیست
     const hasCaptcha = await this.page.$('#dntCaptchaImg, img[alt="captcha"], img[src*="captcha" i]')
     if (!hasCaptcha) return { solved: true, needsManual: false }
 
@@ -392,24 +799,42 @@ export class WaybillFlow {
       const cap = await captchaSolver.solveAndFill(this.page)
       if (cap.filled) return { solved: true, needsManual: false }
       await captchaSolver.refreshCaptcha(this.page)
-      await this.page.waitForTimeout(900)
+      await this.page.waitForTimeout(1500)
     }
 
     const screenshotPath = await browserManager.screenshot(this.page, 'captcha-needs-manual')
     return { solved: false, needsManual: true, screenshotPath }
   }
 
+  /**
+   * ثبت نهایی: گام ۹ را کامل می‌کند (کپچا + دکمه‌ی ثبت) و نتیجه را
+   * به شکلی برمی‌گرداند که پردازشگر انتظار دارد.
+   */
   async submit(): Promise<SubmitResult> {
     try {
-      const submitBtn = await this.page.$('button[type="submit"], .btn-primary, button:has-text("ثبت")')
-      if (submitBtn) await submitBtn.click()
-      await this.page.waitForTimeout(5000)
-
-      return await this.readPageResult()
+      const code = await this.fillStep9Confirm()
+      return {
+        success: true,
+        trackingCode: code,
+        resultMessage: `بارنامه با کد رهگیری ${code} ثبت شد`,
+        resultType: 'success',
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       return { success: false, resultMessage: msg, resultType: 'error' }
     }
+  }
+
+  /** استان‌ها → value در #ddStateSource / #ddStateDest */
+  private static readonly PROVINCES: Record<string, string> = {
+    'آذربایجان شرقی': '4', 'آذربایجان شرقى': '4', 'آذربایجان غربی': '5', 'آذربایجان غربى': '5',
+    'اردبیل': '25', 'اصفهان': '11', 'البرز': '31', 'ایلام': '18', 'بوشهر': '22', 'تهران': '1',
+    'چهارمحال و بختیاری': '16', 'چهارمحال و بختیارى': '16', 'خراسان جنوبی': '30',
+    'خراسان رضوی': '10', 'خراسان شمالی': '29', 'خوزستان': '7', 'زنجان': '20', 'سمنان': '23',
+    'سیستان و بلوچستان': '12', 'فارس': '8', 'قزوین': '27', 'قم': '26', 'گلستان': '28',
+    'گیلان': '2', 'لرستان': '17', 'مازندران': '3', 'مرکزی': '24', 'مرکزى': '24',
+    'هرمزگان': '14', 'همدان': '15', 'کردستان': '13', 'کرمان': '9', 'کرمانشاه': '6',
+    'کهگیلویه و بویر احمد': '19', 'یزد': '21',
   }
 
   private async readPageResult(): Promise<SubmitResult> {
