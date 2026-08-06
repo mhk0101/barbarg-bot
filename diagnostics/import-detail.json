@@ -1,0 +1,36 @@
+{
+  "trackingCode": "1308439438",
+  "sender": "شرکت شرکت",
+  "receiver": "شرکت شرکت",
+  "driverName": "علي پرون",
+  "headerUserName": "علي پرون",
+  "driverNationalCode": "3070427898",
+  "date": "1405/05/15",
+  "plate": {
+    "freeZone": false,
+    "twoDigit": "45",
+    "threeDigit": "923",
+    "letterValue": "21",
+    "letterText": "ع",
+    "iran": "17",
+    "fzTwoDigit": "",
+    "fzNumber": "",
+    "fzZone": "منطقه آزاد"
+  },
+  "announceCost": "10000000",
+  "insuranceCost": "0",
+  "origin": "کرمان، سیرجان، میدان قدس، خیابان شهید شفیعی",
+  "destination": "کرمان، سیرجان، خیابان ابن سینا، خیابان بدر جنوبی",
+  "selfDeclaredStart": "1405/05/15  16:19",
+  "estimatedEnd": "1405/05/15  16:20",
+  "shippingStart": "",
+  "shippingFinish": "",
+  "cargo": [
+    {
+      "name": "آجر",
+      "packaging": "سایر",
+      "count": "19",
+      "weightTon": "19"
+    }
+  ]
+}

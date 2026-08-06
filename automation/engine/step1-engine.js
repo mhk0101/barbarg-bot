@@ -931,16 +931,6 @@ async function fillCargoStep(page, cargo, OUT, tag, verbose = true) {
    #normalmabda / #normalmagsad کلاس d-none دارد. ما آن را نمایان
    می‌کنیم تا بتوانیم استان/شهر/آدرس را مستقیم پر کنیم.
    شهر با AJAX بعد از انتخاب استان پر می‌شود.
-
-   ⚠ حالت جدید (خواسته‌ی کاربر) — گام ۵ و ۶ فقط همین دو ورودی:
-       گام ۵ (مبدا):  MapCity (استان/شهرستان) + AddressSearch (محله/آدرس)
-       گام ۶ (مقصد):  MapCity2 (استان/شهرستان) + AddressSearch2 (محله/آدرس)
-     • استان اول از روی پلاک (کد ایران) تشخیص داده می‌شود
-     • در هر ورودی حتما تایپ می‌شود (حرف‌به‌حرف)
-     • بعد از تایپ صبر می‌شود تا لیست بالا بیاید
-     • بعد گزینه‌ی درست انتخاب می‌شود
-     • هیچ فیلد دیگری (dropdown استان، کدپستی، آدرس متنی و...) دست نمی‌خورد
-     فعال‌سازی: کلید `onlySelect2: true` در STEP_ORIGIN / STEP_DEST
    ═══════════════════════════════════════════ */
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1165,16 +1155,12 @@ async function select2Pick(page, selectId, text, opts = {}) {
     await page.keyboard.type(ch, { delay: 0 }).catch(() => {})
     await humanPause(90, 220)
   }
-  log(`      ⌨ در «${selectId}» تایپ شد: «${want}» — صبر تا لیست بالا بیاید...`)
+  log(`      ⌨ در «${selectId}» تایپ شد: «${want}»`)
 
   // ── ۳) صبر تا نتایجِ *همین* فهرست بیاید ──
-  //     «در حال جستجو» و «موردی یافت نشد» را هم تشخیص می‌دهیم.
-  //     ⚠ «موردی یافت نشد» ممکن است موقتی باشد (درخواست AJAX سایت هنوز
-  //     جواب نداده)؛ تا ۴ بار دوباره چک می‌کنیم و فقط بعد تسلیم می‌شویم.
+  //     «در حال جستجو» و «موردی یافت نشد» را هم تشخیص می‌دهیم
   let options = []
-  let emptyCount = 0
-  await page.waitForTimeout(2000)              // نفسی به AJAX سایت بده
-  for (let i = 0; i < 60; i++) {               // تا ۳۰ ثانیه
+  for (let i = 0; i < 40; i++) {          // تا ۲۰ ثانیه
     await page.waitForTimeout(500)
     const st = await page.evaluate((rid) => {
       const ul = document.getElementById(rid)
@@ -1194,14 +1180,9 @@ async function select2Pick(page, selectId, text, opts = {}) {
 
     if (st.state === 'ready') { options = st.items; break }
     if (st.state === 'empty') {
-      emptyCount++
-      if (emptyCount >= 4) {
-        log(`      ✖ سایت گفت «موردی یافت نشد» برای «${want}» (پس از ${emptyCount} بررسی)` )
-        await page.keyboard.press('Escape').catch(() => {})
-        return { ok: false, reason: 'not-found', options: [] }
-      }
-      await page.waitForTimeout(1200)
-      continue
+      log(`      ✖ سایت گفت «موردی یافت نشد» برای «${want}»`)
+      await page.keyboard.press('Escape').catch(() => {})
+      return { ok: false, reason: 'not-found', options: [] }
     }
   }
 
@@ -1235,13 +1216,6 @@ async function select2Pick(page, selectId, text, opts = {}) {
       items.find((li) => fold(li.textContent) === w) ||                          // دقیق
       (exact ? null : items.find((li) => fold(li.textContent).startsWith(w))) || // شروع با
       (exact ? null : items.find((li) => fold(li.textContent).includes(w)))      // شامل
-    /* اگر فقط یک گزینه در فهرست است و با متن تایپ‌شده هم‌خانواده است
-       (یکی شامل دیگری باشد — مثل «بوشهر» و «شهرستان بوشهر»)، همان را
-       انتخاب کن. سایت‌های AJAX گاهی دقیقا فقط همان یک مورد را برمی‌گردانند. */
-    if (!hit && items.length === 1) {
-      const one = fold(items[0].textContent)
-      if (one.includes(w) || w.includes(one)) hit = items[0]
-    }
     /* اولین گزینه فقط وقتی که صریحا اجازه داده شده باشد.
        پیش‌تر این کار همیشه انجام می‌شد و می‌توانست شهر اشتباه ثبت کند. */
     if (!hit && allowFirst) hit = items[0]
@@ -1337,226 +1311,193 @@ async function pickCity(page, sel, cityName) {
   }, { s: sel, want: cityName }).catch(() => null)
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   گام ۵ (مبدا) و گام ۶ (مقصد)
+
+   ⚠ قانون: فقط و فقط در دو ورودی تایپ می‌شود. جای دیگری دست نمی‌خورد.
+
+     ۱) MapCity  / MapCity2
+        placeholder: «شهرستان مورد نظر را انتخاب نمایید»
+        ورودی درست: نام شهرستان   (مثلا: سیرجان)
+
+     ۲) AddressSearch / AddressSearch2
+        placeholder: «شهر/روستا/محله مورد نظر...»
+        ورودی درست: نام شهر یا روستا یا محله   (مثلا: سیرجان)
+
+   هیچ چیز دیگری پر نمی‌شود — نه استان، نه کد پستی، نه آدرس متنی،
+   نه dropdown قدیمی شهر. کدشان پایین‌تر نگه داشته شده ولی خاموش است
+   (FILL_ONLY_TWO). اگر روزی لازم شد، همان‌جا روشن می‌شود.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** اگر true باشد، فقط دو Select2 بالا پر می‌شوند و بس. */
+const FILL_ONLY_TWO = true
+
+/**
+ * پیش از تایپ، از روی placeholder تایید می‌کند که سراغ فیلد درست رفته‌ایم.
+ * برمی‌گرداند: متن placeholder یا '' اگر پیدا نشد.
+ */
+async function select2Placeholder(page, selectId) {
+  return page.evaluate((id) => {
+    const sel = document.getElementById(id)
+    if (!sel) return ''
+    let ui = sel.nextElementSibling
+    if (!(ui && ui.classList && ui.classList.contains('select2-container'))) {
+      ui = (sel.parentElement || document).querySelector('.select2-container')
+    }
+    if (!ui) return ''
+    const ph = ui.querySelector('.select2-selection__placeholder')
+    return ph ? (ph.textContent || '').trim() : ''
+  }, selectId).catch(() => '')
+}
+
+/**
+ * آیا این متن آدرس است تا نام شهر؟
+ *
+ * فیلدهای شهرستان و شهر/روستا/محله در سایت فقط نام مکان می‌پذیرند.
+ * اگر کاربر در پنل اشتباهی آدرس وارد کرده باشد، اینجا می‌گیریمش
+ * تا در کادر اشتباه تایپ نشود.
+ */
+function looksLikeAddress(t) {
+  const x = String(t || '').trim()
+  if (!x) return false
+  /* واژه‌های آدرسی */
+  if (/(خیابان|خيابان|کوچه|كوچه|بلوار|میدان|ميدان|پلاک|پلاك|جاده|بزرگراه|شهرک|شهرك|کیلومتر|نبش|روبروی|طبقه|واحد|بن ?بست)/.test(x)) return true
+  /* بیش از یک بخشِ جداشده با ویرگول → آدرس */
+  if (x.split(/[،,]/).filter((s) => s.trim()).length > 1) return true
+  /* اسم شهر معمولا کوتاه است */
+  if (x.length > 25) return true
+  return false
+}
+
 async function fillLocationStep(page, cfg, loc, OUT, tag, verbose = true, plate = null) {
   const log = (m) => { if (verbose) console.log(m) }
 
   await unhide(page, cfg.wrapperId)
   await humanPause(600, 1200)
 
-  /* ── استان ──
-     اگر کاربر «تشخیص خودکار» را انتخاب کرده باشد، استان از کد ایران
-     پلاک درمی‌آید. وگرنه همان چیزی که خودش نوشته. */
+  /* استان در فرم سایت ست نمی‌شود (طبق خواسته: فقط دو ورودی).
+     فقط به‌عنوان جایگزین اضطراری نگه داشته می‌شود. */
   let province = loc.province
-  const plateProvince = plate ? provinceFromPlate(plate) : null
-  const plateShown = typeof plate === 'string' ? plate : ((plate && plate.text) || '')
   if (loc.autoProvince && plate) {
-    if (plateProvince) {
-      province = plateProvince
-      log(`   ⓘ استان از پلاک «${plateShown}» تشخیص داده شد: ${province}`)
-    } else {
-      log(`   ⚠ استان از پلاک تشخیص داده نشد — از مقدار پروفایل استفاده می‌شود`)
+    const guess = provinceFromPlate(plate)
+    if (guess) {
+      province = guess
+      log(`   ⓘ استان از پلاک تشخیص داده شد: ${guess}`)
     }
-  } else if (plateProvince) {
-    log(`   ⓘ کد ایران پلاک «${plateShown}» → استان «${plateProvince}» (به‌عنوان یکی از متن‌های تایپ هم استفاده می‌شود)`)
   }
 
-  /* ═══════════════════════════════════════════════════════════════════
-     حالت جدید (گام ۵ و ۶) — فقط همین دو ورودی Select2
-     ───────────────────────────────────────────────────────────────────
-       گام ۵ (مبدا):  MapCity (شهرستان) + AddressSearch (شهر/روستا/محله)
-       گام ۶ (مقصد):  MapCity2 (شهرستان) + AddressSearch2 (شهر/روستا/محله)
+  /* چه چیزی از پروفایل خوانده شد — تا اگر اشتباه بود، از لاگ معلوم باشد */
+  log('   ── نگاشت پنل ← سایت ──')
+  log(`      استان «${loc.province || '—'}»${loc.autoProvince ? ' (خودکار از پلاک)' : ''}  →  ${cfg.mapCity} (شهرستان)`)
+  log(`      شهر   «${loc.city || '—'}»  →  ${cfg.addressSearch} (شهر/روستا/محله)`)
+  log(`      آدرس  «${loc.address || '—'}»  →  وارد نمی‌شود`)
 
-       دقیقا طبق خواسته‌ی کاربر:
-         • «استان» از پنل ربات (تشخیص‌داده‌شده از پلاک یا انتخاب دستی)
-           گرفته می‌شود و اول در «شهرستان» تایپ می‌شود
-         • مقدار «شهر مبدا/مقصد» پنل (که محله/روستا در آن گذاشته می‌شود)
-           در «شهر/روستا/محله» تایپ می‌شود
-         • بعد از هر تایپ صبر می‌کنیم تا لیست بالا بیاید و انتخاب می‌کنیم
-         • هیچ فیلد دیگری دست نمی‌خورد
-       ═══════════════════════════════════════════════════════════════ */
+  /* ═══ ورودی ۱ از ۲ — «شهرستان مورد نظر را انتخاب نمایید» ═══
+     منبع: فیلد «استان مبدا/مقصد» در پنل بات. */
+  {
+    let county = String(province || '').trim()
 
-  /* متنی که شبیه آدرس است نه نام شهرستان —
-     «شهید نظام احسایی، خیابان میرزا رضا» را نباید در کادر شهرستان تایپ کرد */
-  const looksLikeAddress = (t) =>
-    /خیابان|کوچه|میدان|بلوار|جاده|بزرگراه|اتوبان|پارک|بازار|شهرک|مجتمع|برج|ساختمان|بنگاه|تعمیرگاه/.test(String(t || '')) ||
-    String(t || '').length > 24
-
-  if (cfg.onlySelect2) {
-    /* ── ورودی اول: شهرستان (MapCity / MapCity2) ──
-       اول «استان» از پنل تایپ می‌شود (تشخیص‌داده‌شده از پلاک یا انتخاب دستی).
-       اگر «شهر» پنل شبیه نام شهرستان بود (نه آدرس/محله)، بعد از استان
-       همان هم امتحان می‌شود. */
-    if (cfg.mapCity) {
-      const chain = unique([
-        province,                                   // ۱) استان از پنل/پلاک
-        looksLikeAddress(loc.city) ? '' : loc.city, // ۲) شهرستان (اگر آدرس نباشد)
-        looksLikeAddress(loc.locality) ? '' : loc.locality,
-      ])
-      let pickedCity = null
-      for (const term of chain) {
-        if (!term) continue
-        log(`   → ${cfg.mapCity} (شهرستان): تایپ «${term}» — صبر تا لیست...`)
-        const r = await select2Pick(page, cfg.mapCity, term, { verbose, allowFirst: false })
-        if (r.ok) { pickedCity = r.picked; break }
-        log(`      ⓘ «${term}» در لیست نبود (${r.reason}) — تلاش با متن بعدی`)
-        await humanPause(500, 1000)
-      }
-      if (!pickedCity) {
-        log(`   ✖ شهرستان «${province || loc.city}» انتخاب نشد — متن‌های امتحان‌شده: ${chain.filter(Boolean).join(' | ') || '(خالی)'}`)
-        await page.screenshot({ path: path.join(OUT, `${tag}-nomapcity.png`), fullPage: true }).catch(() => {})
-        return false
-      }
-      log(`   ✔ ${cfg.mapCity} (شهرستان) = «${pickedCity}»`)
-      await humanPause(1500, 2500)   // فرصت به AJAX فیلد بعدی (محله)
+    if (!county) {
+      log('   ✖ «استان مبدا/مقصد» در پنل خالی است')
+      return false
+    }
+    if (looksLikeAddress(county)) {
+      log(`   ✖ «${county}» شبیه آدرس است، نه نام استان — پنل را اصلاح کن`)
+      await page.screenshot({ path: path.join(OUT, `${tag}-badprovince.png`), fullPage: true }).catch(() => {})
+      return false
     }
 
-    /* ── ورودی دوم: شهر/روستا/محله (AddressSearch / AddressSearch2) ──
-       اول مقدار «شهر مبدا/مقصد» پنل تایپ می‌شود (همان‌جایی که محله/روستا
-       گذاشته می‌شود)؛ بعد محله‌ی جدا، بعد بخش اول آدرس (کوتاه‌شده).
-       نمونه: «سرتل ۳۹» → اول «سرتل ۳۹»، بعد «سرتل» (مثل نمونه‌ی واقعی
-       سایت که با «سرتل» نتایج «سرتل، کوچه سرتل ۳۹، ...» می‌آمد) */
-    if (cfg.addressSearch) {
-      const addrPart = String(loc.address || '').trim()
-        .split(/[،,\-]/)[0].trim()
-      const shortAddr = addrPart.length > 30 ? addrPart.slice(0, 30) : addrPart
-      const addrNoDigits = shortAddr.replace(/\s*[\d۰-۹]+\s*$/, '').trim()
-      const chain = unique([
-        loc.city,                                   // ۱) «شهر» پنل (محله در همین‌جا)
-        loc.locality !== loc.city ? loc.locality : '',
-        shortAddr,                                  // ۲) بخش اول آدرس
-        addrNoDigits,                               // ۳) بدون رقم («سرتل ۳۹» → «سرتل»)
-      ])
-      let pickedAddr = null
-      for (const term of chain) {
-        if (!term) continue
-        log(`   → ${cfg.addressSearch} (شهر/روستا/محله): تایپ «${term}» — صبر تا لیست...`)
-        const r = await select2Pick(page, cfg.addressSearch, term, { verbose, allowFirst: false })
-        if (r.ok) { pickedAddr = r.picked; break }
-        log(`      ⓘ «${term}» در لیست نبود (${r.reason}) — تلاش با متن بعدی`)
-        await humanPause(500, 1000)
-      }
-      if (!pickedAddr) {
-        log(`   ⚠ شهر/روستا/محله انتخاب نشد (متن‌های امتحان‌شده: ${chain.filter(Boolean).join(' | ') || '(خالی)'})`)
-        log('      → متن «شهر مبدا/مقصد» پنل را طوری بنویس که در جستجوی سایت پیدا شود')
-      } else {
-        log(`   ✔ ${cfg.addressSearch} (شهر/روستا/محله) = «${pickedAddr}»`)
-      }
+    const ph = await select2Placeholder(page, cfg.mapCity)
+    if (ph) log(`   ⓘ ${cfg.mapCity} → «${ph}»`)
+    if (ph && !/شهرستان/.test(ph)) {
+      log(`   ✖ ${cfg.mapCity} انتظار «شهرستان» نداشت — تایپ نشد`)
+      await page.screenshot({ path: path.join(OUT, `${tag}-wrongfield.png`), fullPage: true }).catch(() => {})
+      return false
     }
-    await page.screenshot({ path: path.join(OUT, `${tag}-filled.png`), fullPage: true }).catch(() => {})
-    await humanPause(600, 1200)
 
-    const nb = await page.$(cfg.nextBtn)
-    if (!nb) { log(`   ✖ ${cfg.nextBtn} نیست`); return false }
-    await nb.click().catch(() => {})
-    await page.waitForTimeout(2200)
-
-    const active = await page.evaluate((id) => {
-      const el = document.getElementById(id)
-      return !!(el && el.classList.contains('active'))
-    }, cfg.nextPane).catch(() => false)
-
-    if (!active) {
-      log('   ✖ گام بعد باز نشد:')
-      const errs = await page.evaluate(() => {
-        const o = []
-        document.querySelectorAll('small.help-block').forEach(e => {
-          if (e.offsetParent !== null && (e.innerText || '').trim()) o.push(e.innerText.trim())
-        })
-        return Array.from(new Set(o)).slice(0, 8)
-      }).catch(() => [])
-      errs.forEach(e => log('      • ' + e))
-      const sw = await readSwalError(page)
-      if (sw) log(`      • پاپ‌آپ: ${sw}`)
-      await page.screenshot({ path: path.join(OUT, `${tag}-error.png`), fullPage: true }).catch(() => {})
-    }
-    return active
-  }
-
-  /* ═══════════════════════════════════════════════════════════════════
-     رفتار قبلی (کامل) — فقط برای حالتی که onlySelect2 نباشد:
-     dropdown استان + شهر + Select2 ها + کدپستی و آدرس متنی
-     ═══════════════════════════════════════════════════════════════════ */
-
-  const pv = PROVINCES[province]
-  if (!pv) { log(`   ✖ استان «${province}» شناخته نشد`); return false }
-  await pickSelect(page, cfg.state, pv)
-  log(`   ✔ استان: ${province} (${pv})`)
-  await humanPause(1200, 2200)   // فرصت به AJAX شهرها
-
-  /* ── شهرستان (Select2 اول) ──
-     ورودی درست: نام شهر پروفایل. اگر خالی بود، نام استان.
-     exact نمی‌گذاریم چون سایت گاهی «سیرجان» را «شهرستان سیرجان»
-     می‌نویسد، ولی allowFirst هم نمی‌دهیم تا شهر بی‌ربط انتخاب نشود. */
-  if (cfg.mapCity) {
-    const cityName = (loc.city || province || '').trim()
-    log(`   → ${cfg.mapCity} (شهرستان): تایپ «${cityName}»`)
-    const r = await select2Pick(page, cfg.mapCity, cityName, { verbose, allowFirst: false })
+    log(`   → ورودی ۱/۲ — ${cfg.mapCity} ← استانِ پنل: «${county}»`)
+    const r = await select2Pick(page, cfg.mapCity, county, { verbose, allowFirst: false })
     if (!r.ok) {
-      log(`   ✖ شهرستان «${cityName}» انتخاب نشد (${r.reason})`)
+      log(`   ✖ «${county}» انتخاب نشد (${r.reason})`)
       if (r.options && r.options.length) log(`      موجود: ${r.options.join(' | ')}`)
       await page.screenshot({ path: path.join(OUT, `${tag}-nomapcity.png`), fullPage: true }).catch(() => {})
       return false
     }
-    /* شهرستانِ انتخاب‌شده معمولا فهرست فیلد بعدی را با AJAX عوض می‌کند */
-    await humanPause(1200, 2200)
+    /* انتخاب اینجا، فهرست ورودی دوم را با AJAX عوض می‌کند */
+    await humanPause(1500, 2500)
   }
 
-  /* ── جستجوی آدرس / محله (Select2 دوم) ──
-     ⚠ این فیلد شهرستان نیست. ورودی درستش متنِ آدرس است، نه نام شهر.
-     ترتیب تلاش:  locality → آدرس → شهر
-     اگر پیدا نشد، ادامه می‌دهیم چون فیلد آدرس متنی جداگانه هم پر می‌شود. */
-  if (cfg.addressSearch) {
-    const candidates = [loc.locality, loc.address, loc.city]
-      .map((x) => String(x || '').trim())
-      .filter(Boolean)
+  /* ═══ ورودی ۲ از ۲ — «شهر/روستا/محله مورد نظر...» ═══
+     منبع: فیلد «شهر مبدا/مقصد» در پنل بات. */
+  {
+    const locality = String(loc.city || '').trim()
 
-    let done = false
-    for (const q of candidates) {
-      /* آدرس‌های بلند را کوتاه می‌کنیم — Select2 با جمله‌ی طولانی
-         چیزی پیدا نمی‌کند. اولین دو بخشِ آدرس معمولا کافی است. */
-      const term = q.length > 30 ? q.split(/[،,\-]/)[0].trim() : q
-      if (!term) continue
-      log(`   → ${cfg.addressSearch} (جستجوی آدرس): تایپ «${term}»`)
-      const r2 = await select2Pick(page, cfg.addressSearch, term, { verbose, allowFirst: false })
-      if (r2.ok) { done = true; await humanPause(800, 1500); break }
-      log(`      ⓘ «${term}» نتیجه نداد (${r2.reason})`)
-      await humanPause(400, 800)
+    if (!locality) {
+      log('   ✖ «شهر مبدا/مقصد» در پنل خالی است')
+      return false
     }
-    if (!done) log('   ⚠ جستجوی آدرس نتیجه نداد — با آدرس متنی ادامه می‌دهیم')
-  }
-
-  /* ── dropdown قدیمی شهر (اگر هنوز روی صفحه باشد) ── */
-  if (cfg.city) {
-    const exists = await page.$(cfg.city)
-    if (exists) {
-      const city = await pickCity(page, cfg.city, loc.city)
-      if (city && city.text) log(`   ✔ شهر: ${city.text}`)
+    if (looksLikeAddress(locality)) {
+      log(`   ✖ «${locality}» شبیه آدرس است، نه نام شهر`)
+      log('      در پنل، «شهر مبدا/مقصد» را فقط نام شهر بنویس (مثلا: سیرجان)')
+      log('      متن آدرس را به فیلد «آدرس» منتقل کن')
+      await page.screenshot({ path: path.join(OUT, `${tag}-badcity.png`), fullPage: true }).catch(() => {})
+      return false
     }
+
+    const ph = await select2Placeholder(page, cfg.addressSearch)
+    if (ph) log(`   ⓘ ${cfg.addressSearch} → «${ph}»`)
+    if (ph && !/شهر|روستا|محله/.test(ph)) {
+      log(`   ✖ ${cfg.addressSearch} انتظار «شهر/روستا/محله» نداشت — تایپ نشد`)
+      await page.screenshot({ path: path.join(OUT, `${tag}-wrongfield.png`), fullPage: true }).catch(() => {})
+      return false
+    }
+
+    log(`   → ورودی ۲/۲ — ${cfg.addressSearch} ← شهرِ پنل: «${locality}»`)
+    const r2 = await select2Pick(page, cfg.addressSearch, locality, { verbose, allowFirst: false })
+    if (!r2.ok) {
+      log(`   ✖ «${locality}» انتخاب نشد (${r2.reason})`)
+      if (r2.options && r2.options.length) log(`      موجود: ${r2.options.join(' | ')}`)
+      await page.screenshot({ path: path.join(OUT, `${tag}-nolocality.png`), fullPage: true }).catch(() => {})
+      return false
+    }
+    await humanPause(800, 1500)
   }
 
-  const setVal = async (sel, val) => {
-    if (!val) return
-    const el = await page.$(sel); if (!el) return
-    await el.click({ clickCount: 3 }).catch(() => {})
-    await el.fill('').catch(() => {})
-    await el.type(String(val), { delay: 12 })
-    await page.evaluate((s) => {
-      const i = document.querySelector(s); if (!i) return
-      i.dispatchEvent(new Event('input', { bubbles: true }))
-      i.dispatchEvent(new Event('change', { bubbles: true }))
-      i.dispatchEvent(new Event('blur', { bubbles: true }))
-      if (window.jQuery) { try { window.jQuery(i).trigger('change').trigger('blur') } catch (e) {} }
-    }, sel).catch(() => {})
-    await humanPause(300, 700)
-  }
+  /* ══════════════════════════════════════════════════════════
+     پایین اینجا خاموش است. تا وقتی FILL_ONLY_TWO برابر true
+     باشد، هیچ فیلد دیگری لمس نمی‌شود.
+     ══════════════════════════════════════════════════════════ */
+  if (!FILL_ONLY_TWO) {
+    const pv = PROVINCES[province]
+    if (pv) await pickSelect(page, cfg.state, pv)
 
-  if (loc.postalCode) await setVal(cfg.postal, loc.postalCode)
-  await setVal(cfg.address, loc.address)
-  log(`   ✔ آدرس: ${loc.address}`)
+    if (cfg.city && await page.$(cfg.city)) {
+      await pickCity(page, cfg.city, loc.city)
+    }
+
+    const setVal = async (sel, val) => {
+      if (!val) return
+      const el = await page.$(sel); if (!el) return
+      await el.click({ clickCount: 3 }).catch(() => {})
+      await el.fill('').catch(() => {})
+      await el.type(String(val), { delay: 12 })
+      await page.evaluate((sl) => {
+        const i = document.querySelector(sl); if (!i) return
+        i.dispatchEvent(new Event('input', { bubbles: true }))
+        i.dispatchEvent(new Event('change', { bubbles: true }))
+        i.dispatchEvent(new Event('blur', { bubbles: true }))
+        if (window.jQuery) { try { window.jQuery(i).trigger('change').trigger('blur') } catch (e) {} }
+      }, sel).catch(() => {})
+      await humanPause(300, 700)
+    }
+    if (loc.postalCode) await setVal(cfg.postal, loc.postalCode)
+    await setVal(cfg.address, loc.address)
+  }
 
   await page.screenshot({ path: path.join(OUT, `${tag}-filled.png`), fullPage: true }).catch(() => {})
   await humanPause(500, 1000)
 
+  /* ── رفتن به گام بعد ── */
   const nb = await page.$(cfg.nextBtn)
   if (!nb) { log(`   ✖ ${cfg.nextBtn} نیست`); return false }
   await nb.click().catch(() => {})
@@ -1584,19 +1525,6 @@ async function fillLocationStep(page, cfg, loc, OUT, tag, verbose = true, plate 
   return active
 }
 
-/** عناصر تکراری را با حفظ ترتیب حذف می‌کند (برای زنجیره‌ی متن‌های تایپ) */
-function unique(arr) {
-  const seen = new Set()
-  const out = []
-  for (const x of arr) {
-    const k = String(x || '').trim()
-    if (!k || seen.has(k)) continue
-    seen.add(k)
-    out.push(k)
-  }
-  return out
-}
-
 const STEP_ORIGIN = {
   label: 'گام ۵: مبدا بارگیری', wrapperId: 'normalmabda',
   state: '#ddStateSource', city: '#ddCitySource',
@@ -1604,8 +1532,6 @@ const STEP_ORIGIN = {
   mapCity: 'MapCity', addressSearch: 'AddressSearch',
   postal: '#sourcePostalCode', address: '#txtAddressSource',
   nextBtn: '#btnGoLVL6', nextPane: 'pills-6',
-  // خواسته‌ی کاربر: گام ۵ فقط همین دو ورودی (استان/شهرستان + محله) پر شود
-  onlySelect2: true,
 }
 const STEP_DEST = {
   label: 'گام ۶: مقصد تخلیه', wrapperId: 'normalmagsad',
@@ -1614,8 +1540,6 @@ const STEP_DEST = {
   mapCity: 'MapCity2', addressSearch: 'AddressSearch2',
   postal: '#destPostalCode', address: '#txtAddressDest',
   nextBtn: '#btnGoLVL7', nextPane: 'pills-7',
-  // خواسته‌ی کاربر: گام ۶ فقط همین دو ورودی (استان/شهرستان + محله) پر شود
-  onlySelect2: true,
 }
 
 /* ═══════════ گام ۷: فقط نمایش ═══════════ */
@@ -2906,13 +2830,36 @@ function splitLocation(raw) {
   const t = String(raw || '').replace(/\s+/g, ' ').trim()
   if (!t) return { province: '', city: '', address: '' }
 
+  /* ⚠ اینجا قبلا یک باگ بد بود:
+       هر متنی که دو تکه داشت، تکه‌ی اول «استان» و دومی «شهر» فرض
+       می‌شد. پس آدرسی مثل
+           «شهید نظام احسایی، خیابان میرزا رضا»
+       تبدیل می‌شد به
+           استان = شهید نظام احسایی
+           شهر   = خیابان میرزا رضا
+       و همین در فرم پروفایل می‌نشست.
+
+     حالا تکه‌ای را «استان» می‌نامیم که واقعا در فهرست ۳۱ استان
+     کشور باشد. اگر نبود، کل متن آدرس است و استان/شهر خالی
+     می‌مانند — که درست‌تر از حدسِ غلط است. */
+
   const parts = t.split(/\s*[-–—/|،,]\s*/).filter(Boolean)
-  if (parts.length >= 3) {
+  const isProvince = (x) => Object.prototype.hasOwnProperty.call(PROVINCES, String(x || '').trim())
+
+  if (parts.length >= 3 && isProvince(parts[0])) {
     return { province: parts[0], city: parts[1], address: parts.slice(2).join('، ') }
   }
-  if (parts.length === 2) return { province: parts[0], city: parts[1], address: '' }
-  return { province: t, city: t, address: '' }
+  if (parts.length === 2 && isProvince(parts[0])) {
+    return { province: parts[0], city: parts[1], address: '' }
+  }
+  if (parts.length === 1 && isProvince(parts[0])) {
+    return { province: parts[0], city: '', address: '' }
+  }
+
+  /* هیچ استانی تشخیص داده نشد → همه‌اش آدرس است */
+  return { province: '', city: '', address: t }
 }
+
 
 /** «علي پرون» → { firstName:'علي', lastName:'پرون' } */
 function splitPersonName(raw) {
@@ -3368,28 +3315,15 @@ async function importLastBarname(opts) {
 }
 
 /* ═══════ تبدیل رکورد RegistrationProfile به داده‌ی موتور ═══════ */
-/** رشته‌ی پلاک را به چهار بخش تجزیه می‌کند.
- *  «۴۵ ع ۹۲۳ ۱۷»  →  twoDigit=45, letter=ع, threeDigit=923, iran=17
- *  «۴۵ ع ۹۲۳ ایران ۱۷»  →  همین
- *  «ایران ۴۸»    →  iran=48 (بقیه خالی) — برای تشخیص استان کافی است
- */
 function parsePlateText(txt) {
-  const s = toLatin(txt || '').replace(/[-_|]/g, ' ').trim()
-  /* عددی که بلافاصله بعد از «ایران» آمده = کد ایران (سمت راست پلاک).
-     حتی اگر فقط «ایران ۴۸» داشته باشیم، تشخیص استان باید کار کند. */
-  let iran = ''
-  const m = s.match(/ایران\s*(\d+)/i)
-  if (m) iran = m[1]
-  /* برای یافتن حرف پلاک، کلمه‌ی «ایران» را کنار بگذار
-     (وگرنه «ایران ۷۵» → حرف = «ایران» می‌شد) */
-  const letterSrc = s.replace(/ایران/g, ' ')
-  const letter = (letterSrc.match(/[\u0600-\u06FF]+/) || [''])[0]
+  const s = toLatin(txt || '').replace(/ایران/g, ' ').replace(/[-_|]/g, ' ').trim()
+  const letter = (s.match(/[\u0600-\u06FF]+/) || [''])[0]
   const nums = s.match(/\d+/g) || []
   return {
     twoDigit:   nums[0] || '',
     letter:     letter || '',
     threeDigit: nums[1] || '',
-    iran:       iran || nums[2] || '',
+    iran:       nums[2] || '',
   }
 }
 
@@ -3438,6 +3372,10 @@ function profileToData(p) {
     origin: {
       province: p.originProvince || '',
       city: p.originCity || '',
+      /* شهرستان — ورودی ۱ از ۲ در گام ۵ (MapCity).
+         ستون جدایی در دیتابیس نیست، پس همان «شهر» پروفایل است. */
+      county: p.originCounty || p.originCity || '',
+      /* شهر/روستا/محله — ورودی ۲ از ۲ (AddressSearch) */
       locality: p.originLocality || p.originCity || '',
       address: p.originAddress || '',
       postalCode: p.originPostalCode || '',
@@ -3447,14 +3385,13 @@ function profileToData(p) {
     destination: {
       province: p.destProvince || '',
       city: p.destCity || '',
+      /* شهرستان — ورودی ۱ از ۲ در گام ۶ (MapCity2) */
+      county: p.destCounty || p.destCity || '',
+      /* شهر/روستا/محله — ورودی ۲ از ۲ (AddressSearch2) */
       locality: p.destLocality || p.destCity || '',
       address: p.destAddress || '',
       postalCode: p.destPostalCode || '',
-      /* تشخیص خودکار استان از پلاک — مثل مبدا از تگ notes می‌آید.
-         (قبلا از فیلد p.autoProvinceFromPlate می‌خواند که در دیتابیس
-         وجود ندارد و همیشه false بود ⇒ استان مقصد هیچ‌وقت از پلاک
-         تشخیص داده نمی‌شد — باگ. حالا هر دو از notes خوانده می‌شوند.) */
-      autoProvince: AUTO_PROV_TAG.test(String(p.notes || '')) || p.autoProvinceFromPlate === true,
+      autoProvince: p.autoProvinceFromPlate === true,
     },
     fare: {
       amount: toLatin(p.freightCost || ''),
@@ -3479,16 +3416,12 @@ function validateData(d) {
     [d.driver.plate.letter, 'پلاک (حرف)'], [d.driver.plate.threeDigit, 'پلاک (سه رقم)'],
     [d.driver.plate.iran, 'پلاک (کد ایران)'],
     [d.cargo.name, 'نام کالا'], [d.cargo.weightTon, 'وزن کالا'], [d.cargo.value, 'ارزش کالا'],
-    [d.origin.city, 'شهر مبدا'],
-    [d.destination.city, 'شهر مقصد'],
+    /* آدرس مبدا/مقصد اجباری نیست — در سایت وارد نمی‌شود.
+       فقط استان (→ شهرستانِ سایت) و شهر (→ شهر/روستا/محله) لازم‌اند. */
+    [d.origin.province, 'استان مبدا'], [d.origin.city, 'شهر مبدا'],
+    [d.destination.province, 'استان مقصد'], [d.destination.city, 'شهر مقصد'],
     [d.fare.amount, 'مبلغ کرایه'],
   ]
-  /* در حالت «تشخیص خودکار استان از پلاک»، استان لازم نیست کاربر پر کند
-     — ربات از کد ایران پلاک تشخیصش می‌دهد. */
-  if (!d.origin.autoProvince) req.push([d.origin.province, 'استان مبدا'])
-  if (!d.destination.autoProvince) req.push([d.destination.province, 'استان مقصد'])
-  /* «آدرس مبدا/مقصد» دیگر اجباری نیست — نقشه‌ی سایت بعد از انتخاب
-     شهرستان و محله، خودش آدرس متنی را پر می‌کند. */
   for (const [v, label] of req) if (!String(v || '').trim()) miss.push(label)
   return miss
 }

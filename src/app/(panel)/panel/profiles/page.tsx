@@ -178,10 +178,11 @@ const FIELD_RULES: Array<{
   },
   { key: 'originProvince', label: 'استان مبدا', step: 5 },
   { key: 'originCity', label: 'شهر مبدا', step: 5 },
-  { key: 'originAddress', label: 'آدرس مبدا', step: 5 },
   { key: 'destProvince', label: 'استان مقصد', step: 5 },
   { key: 'destCity', label: 'شهر مقصد', step: 5 },
-  { key: 'destAddress', label: 'آدرس مقصد', step: 5 },
+  /* «آدرس مبدا/مقصد» عمدا از قوانین اجباری حذف شدند —
+     ربات در گام ۵/۶ فقط دو ورودی شهرستان و محله را پر می‌کند و
+     نقشه‌ی خود سایت آدرس متنی را بعد از انتخاب پر می‌کند. */
   {
     key: 'freightCost', label: 'مبلغ کرایه', step: 5,
     check: (v) => (Number(v.replace(/\D/g, '')) > 0 ? null : 'مبلغ کرایه باید عددی بزرگ‌تر از صفر باشد'),
@@ -496,12 +497,11 @@ export default function ProfilesPage() {
       ['driverName', 'نام راننده', 3],
       ['driverNationalId', 'کد ملی راننده', 3],
       ['cargoName', 'نام کالا', 4],
-      ['originProvince', 'استان مبدا', 5],
       ['originCity', 'شهر مبدا', 5],
-      ['originAddress', 'آدرس مبدا', 5],
-      ['destProvince', 'استان مقصد', 5],
       ['destCity', 'شهر مقصد', 5],
-      ['destAddress', 'آدرس مقصد', 5],
+      /* «استان» و «آدرس» عمدا از لیست الزامی حذف شدند:
+         استان در حالت خودکار از پلاک تشخیص داده می‌شود و
+         آدرس را نقشه‌ی خود سایت بعد از انتخاب محله پر می‌کند. */
     ]
     const missing = required.filter(([k]) => !String((form as Record<string, unknown>)[k] ?? '').trim())
     if (missing.length > 0) {
@@ -520,8 +520,16 @@ export default function ProfilesPage() {
          تا نیاز به تغییر دیتابیس (migration) نباشد. */
       const TAG = '[auto-province]'
       const cleanNotes = String(form.notes || '').replace(TAG, '').trim()
+      /* در حالت خودکار، استانِ تشخیص‌داده‌شده از پلاک همین‌جا در
+         پروفایل ذخیره می‌شود — هم API فیلد الزامی را می‌پذیرد، هم
+         موتور (گام ۵/۶) استان را از خود پنل برمی‌دارد. */
+      const detectedProv = autoProvince
+        ? provinceFromPlateUI(String(form.plateNumber || '')) || ''
+        : ''
       const body = {
         ...form,
+        originProvince: autoProvince ? (detectedProv || String(form.originProvince || '')) : form.originProvince,
+        destProvince: autoProvince ? (detectedProv || String(form.destProvince || '')) : form.destProvince,
         accountId: form.accountId || null,
         notes: autoProvince ? `${TAG} ${cleanNotes}`.trim() : cleanNotes,
       }
@@ -912,8 +920,8 @@ export default function ProfilesPage() {
                   ) : (
                     <FieldSelect label="استان مبدا *" value={form.originProvince as string} onChange={(v) => updateField('originProvince', v)} options={PROVINCE_LIST} placeholder="انتخاب کنید" error={errOf('originProvince')} />
                   )}
-                  <Field label="شهر مبدا *" value={form.originCity as string} onChange={(v) => updateField('originCity', v)} placeholder="مثلا سیرجان" error={errOf('originCity')} />
-                  <Field label="آدرس مبدا *" value={form.originAddress as string} onChange={(v) => updateField('originAddress', v)} placeholder="خیابان، کوچه، پلاک" error={errOf('originAddress')} />
+                  <Field label="شهر مبدا *" value={form.originCity as string} onChange={(v) => updateField('originCity', v)} placeholder="شهر، محله یا روستا — مثلا سیرجان، ریشهر" error={errOf('originCity')} />
+                  <Field label="آدرس مبدا (اختیاری)" value={form.originAddress as string} onChange={(v) => updateField('originAddress', v)} placeholder="خیابان، کوچه، پلاک" error={errOf('originAddress')} />
                   <Field label="کدپستی مبدا" value={form.originPostalCode as string} onChange={(v) => updateField('originPostalCode', v)} placeholder="اختیاری" />
                 </div>
 
@@ -929,8 +937,8 @@ export default function ProfilesPage() {
                   ) : (
                     <FieldSelect label="استان مقصد *" value={form.destProvince as string} onChange={(v) => updateField('destProvince', v)} options={PROVINCE_LIST} placeholder="انتخاب کنید" error={errOf('destProvince')} />
                   )}
-                  <Field label="شهر مقصد *" value={form.destCity as string} onChange={(v) => updateField('destCity', v)} placeholder="مثلا سیرجان" error={errOf('destCity')} />
-                  <Field label="آدرس مقصد *" value={form.destAddress as string} onChange={(v) => updateField('destAddress', v)} placeholder="خیابان، کوچه، پلاک" error={errOf('destAddress')} />
+                  <Field label="شهر مقصد *" value={form.destCity as string} onChange={(v) => updateField('destCity', v)} placeholder="شهر، محله یا روستا — مثلا سیرجان، ریشهر" error={errOf('destCity')} />
+                  <Field label="آدرس مقصد (اختیاری)" value={form.destAddress as string} onChange={(v) => updateField('destAddress', v)} placeholder="خیابان، کوچه، پلاک" error={errOf('destAddress')} />
                   <Field label="کدپستی مقصد" value={form.destPostalCode as string} onChange={(v) => updateField('destPostalCode', v)} placeholder="اختیاری" />
                 </div>
 
