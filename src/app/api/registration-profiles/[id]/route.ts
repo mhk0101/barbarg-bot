@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 
-export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guard = await requirePermission(request, 'view_waybill')
+  if (!guard.ok) return guard.response
+
   try {
     const { id } = await params
     const item = await prisma.registrationProfile.findUnique({
@@ -24,6 +28,9 @@ export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: s
 }
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guard = await requirePermission(request, 'create_waybill')
+  if (!guard.ok) return guard.response
+
   try {
     const { id } = await params
     const body = await request.json()
@@ -104,7 +111,10 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
   }
 }
 
-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guard = await requirePermission(request, 'delete_waybill')
+  if (!guard.ok) return guard.response
+
   try {
     const { id } = await params
     await prisma.registrationProfile.delete({ where: { id } })

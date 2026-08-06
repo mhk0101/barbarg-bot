@@ -105,7 +105,9 @@ function validatePerson(person, label) {
 
 
 
-const BLOCK_RE = /ERR_CONNECTION_CLOSED|ERR_CONNECTION_RESET|ERR_EMPTY_RESPONSE|ERR_CONNECTION_REFUSED|ERR_TIMED_OUT/
+/* ⚠ قبلا ERR_CONNECTION_TIMED_OUT را نمی‌گرفت (فقط ERR_TIMED_OUT داشت)،
+   پس حلقه‌ی ۲۰ باره‌ی بی‌فایده اجرا می‌شد و مرورگر باز می‌ماند. */
+const BLOCK_RE = /ERR_CONNECTION_CLOSED|ERR_CONNECTION_RESET|ERR_EMPTY_RESPONSE|ERR_CONNECTION_REFUSED|ERR_CONNECTION_TIMED_OUT|ERR_TIMED_OUT|ERR_NETWORK_CHANGED|ERR_SOCKET_NOT_CONNECTED|ERR_ADDRESS_UNREACHABLE|ERR_TUNNEL_CONNECTION_FAILED|ERR_NAME_NOT_RESOLVED|ERR_PROXY_CONNECTION_FAILED/
 const isBlock = (e) => BLOCK_RE.test(String((e && e.message) || e))
 const fmtT = (s) => { const m = Math.floor(s / 60); return m > 0 ? `${m}:${String(s % 60).padStart(2, '0')}` : `${s}s` }
 /** عدد تصادفی بین a و b — برای مدت انتظارهای غیرقابل‌پیش‌بینی */
@@ -131,27 +133,34 @@ function solveMath(t) {
   return o ? o[1] : null
 }
 
-async function probe(page, url) {
-  try { const r = await page.request.get(url, { timeout: 12000 }); return r.status() > 0 } catch { return false }
-}
-async function waitBack(page, url, maxMs) {
-  const t0 = Date.now()
-  console.log(`   ⏳ صبر تا برگشتن سایت (حداکثر ${fmtT(Math.round(maxMs / 1000))})`)
-  while (Date.now() - t0 < maxMs) {
-    await new Promise(r => setTimeout(r, 15000))
-    if (await probe(page, url)) { console.log(`   ✅ سایت برگشت (${fmtT(Math.round((Date.now() - t0) / 1000))})`); return true }
-  }
-  return false
-}
+/* توابع probe() و waitBack() حذف شدند.
+   آن‌ها هنگام بلاک، مرورگر را تا ۵ دقیقه باز نگه می‌داشتند
+   (چون probe از page.request استفاده می‌کرد و به صفحه‌ی زنده نیاز داشت).
+   حالا مرورگر فورا بسته می‌شود و پایش سایت با isSiteReallyBack()
+   انجام می‌شود که مستقل از مرورگر است. */
+
+/**
+ * ناوبری مقاوم.
+ *
+ * خروجی:
+ *   true       موفق
+ *   'BLOCKED'  بلاک IP — لایه‌ی بالاتر باید مرورگر را ببندد و صبر کند
+ *   'TIMEOUT'  تایم‌اوت
+ *   false      خطای دیگر
+ *
+ * ⚠ قبلا هنگام بلاک، همین‌جا تا ۵ دقیقه صبر می‌کرد و مرورگر
+ *   تمام این مدت باز می‌ماند — تا ۲۰ بار، یعنی ساعت‌ها.
+ *   حالا فورا برمی‌گردد تا مرورگر بسته شود، بعد صبر انجام می‌شود.
+ */
 async function gotoR(page, url, label, max = 20) {
   let tmo = 0
   for (let a = 1; a <= max; a++) {
     try { await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }); return true }
     catch (e) {
       if (isBlock(e)) {
-        console.log(`   ⚠ IP بلاک (${a}/${max}) — ${label}`)
-        if (a === max) return false
-        await waitBack(page, url, 180000 + Math.random() * 120000)
+        console.log(`   ⚠ IP بلاک — ${label}`)
+        console.log('      مرورگر بسته می‌شود و بعد صبر می‌کنیم')
+        return 'BLOCKED'
       } else if (/Timeout .* exceeded/.test(String(e.message))) {
         tmo++
         console.log(`   ✖ تایم‌اوت (${tmo}/2)`)
@@ -924,6 +933,58 @@ async function fillCargoStep(page, cargo, OUT, tag, verbose = true) {
    شهر با AJAX بعد از انتخاب استان پر می‌شود.
    ═══════════════════════════════════════════ */
 
+/* ═══════════════════════════════════════════════════════════════════
+   تشخیص استان از روی کد دو رقمی سمت راست پلاک
+
+   در پلاک «۴۵ ع ۹۲۳ ۱۷»:
+       ۴۵  = دو رقم اول (کد شهر/استان محل صدور)
+       ۱۷  = کد ایران (استان)
+
+   جدول رسمی راهنمایی و رانندگی — کد ایران به استان.
+   ═══════════════════════════════════════════════════════════════════ */
+const IRAN_CODE_TO_PROVINCE = {
+  '10': 'خوزستان',    '11': 'مرکزی',      '12': 'خراسان رضوی', '13': 'اصفهان',
+  '14': 'خوزستان',    '15': 'آذربایجان شرقی', '16': 'گیلان',   '17': 'کرمان',
+  '18': 'خوزستان',    '19': 'فارس',       '20': 'خراسان رضوی', '21': 'تهران',
+  '22': 'تهران',      '23': 'مرکزی',      '24': 'همدان',       '25': 'اصفهان',
+  '26': 'قم',         '27': 'خراسان رضوی','28': 'گیلان',       '29': 'تهران',
+  '30': 'خوزستان',    '31': 'البرز',      '32': 'آذربایجان شرقی', '33': 'تهران',
+  '34': 'قزوین',      '35': 'سمنان',      '36': 'کرمانشاه',    '37': 'اردبیل',
+  '38': 'چهارمحال و بختیاری', '39': 'تهران', '40': 'خراسان رضوی',
+  '41': 'گیلان',      '42': 'لرستان',     '43': 'گیلان',       '44': 'مازندران',
+  '45': 'زنجان',      '46': 'مازندران',   '47': 'مازندران',    '48': 'گلستان',
+  '49': 'سیستان و بلوچستان', '51': 'خراسان رضوی', '52': 'همدان',
+  '53': 'آذربایجان شرقی', '54': 'خراسان شمالی', '55': 'مرکزی',
+  '56': 'سیستان و بلوچستان', '57': 'سیستان و بلوچستان', '58': 'آذربایجان غربی',
+  '59': 'خوزستان',    '61': 'خوزستان',    '62': 'مرکزی',       '63': 'خوزستان',
+  '64': 'لرستان',     '65': 'آذربایجان غربی', '66': 'کردستان',  '67': 'کرمانشاه',
+  '68': 'ایلام',      '69': 'مازندران',   '71': 'فارس',        '72': 'فارس',
+  '73': 'کهگیلویه و بویر احمد', '74': 'فارس', '75': 'بوشهر',
+  '76': 'کرمان',      '77': 'هرمزگان',    '78': 'کرمان',       '79': 'یزد',
+  '81': 'اصفهان',     '82': 'اصفهان',     '83': 'اصفهان',      '84': 'اصفهان',
+  '85': 'اصفهان',     '86': 'اصفهان',     '87': 'یزد',         '88': 'چهارمحال و بختیاری',
+  '89': 'یزد',        '91': 'خراسان رضوی','92': 'خراسان رضوی', '93': 'خراسان رضوی',
+  '94': 'خراسان جنوبی','95': 'خراسان رضوی','96': 'خراسان شمالی','97': 'خراسان رضوی',
+  '98': 'سیستان و بلوچستان', '99': 'خراسان رضوی',
+}
+
+/**
+ * استان را از پلاک تشخیص می‌دهد.
+ * ورودی می‌تواند رشته («۴۵ ع ۹۲۳ ۱۷») یا شیء تجزیه‌شده باشد.
+ */
+function provinceFromPlate(plate) {
+  let iran = ''
+  if (typeof plate === 'string') {
+    const p = parsePlateText(plate)
+    iran = p.iran
+  } else if (plate && typeof plate === 'object') {
+    iran = plate.iran || ''
+  }
+  iran = toLatin(iran).replace(/\D/g, '')
+  if (!iran) return null
+  return IRAN_CODE_TO_PROVINCE[iran] || null
+}
+
 const PROVINCES = {
   'آذربایجان شرقی':'4','آذربایجان شرقى':'4','آذربایجان غربی':'5','آذربایجان غربى':'5',
   'اردبیل':'25','اصفهان':'11','البرز':'31','ایلام':'18','بوشهر':'22','تهران':'1',
@@ -932,6 +993,275 @@ const PROVINCES = {
   'سیستان و بلوچستان':'12','فارس':'8','قزوین':'27','قم':'26','گلستان':'28','گیلان':'2',
   'لرستان':'17','مازندران':'3','مرکزی':'24','مرکزى':'24','هرمزگان':'14','همدان':'15',
   'کردستان':'13','کرمان':'9','کرمانشاه':'6','کهگیلویه و بویر احمد':'19','یزد':'21',
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   کار با Select2 (کتابخانه‌ای که سایت در گام ۵ و ۶ استفاده می‌کند)
+
+   Select2 یک <select> معمولی نیست — عنصر اصلی مخفی است و یک
+   رابط جعلی روی آن ساخته می‌شود:
+
+       <select id="MapCity" class="select2-hidden-accessible">   ← مخفی
+       <span class="select2-selection" ...>                       ← چیزی که می‌بینیم
+       <input class="select2-search__field">                      ← بعد از باز شدن
+       <li class="select2-results__option">تهران</li>             ← گزینه‌ها
+
+   پس نمی‌شود selectOption زد. باید:
+       ۱) روی رابط کلیک کرد تا باز شود
+       ۲) در کادر جستجو تایپ کرد
+       ۳) صبر کرد تا نتایج با AJAX بیاید
+       ۴) روی گزینه‌ی درست کلیک کرد
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** یکسان‌سازی حروف برای مقایسه‌ی فارسی */
+function foldFa(t) {
+  return String(t || '')
+    .replace(/[\u064A\u0649]/g, '\u06CC')
+    .replace(/\u0643/g, '\u06A9')
+    .replace(/[\u0622\u0623\u0625]/g, '\u0627')
+    .replace(/[\u064B-\u0652\u0640\u200c]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * انتخاب یک گزینه از Select2 با تایپ کردن.
+ *
+ * ⚠ نکته‌ی حیاتی — چرا این‌قدر سخت‌گیرانه نوشته شده:
+ *   در گام ۵ و ۶ چند Select2 روی صفحه هست (MapCity، AddressSearch،
+ *   MapCity2، AddressSearch2). Select2 کادر جستجو و فهرست نتایج را
+ *   در انتهای <body> می‌سازد، نه کنار خود <select>. اگر با سلکتور
+ *   عمومی «.select2-container--open» کار کنیم، هیچ تضمینی نیست که
+ *   کادرِ بازْ مالِ همان فیلدی باشد که می‌خواهیم — ممکن است شهرِ
+ *   مقصد را در کادر مبدا تایپ کنیم.
+ *
+ *   راه‌حل: از رابطه‌ای که خود سایت در HTML گذاشته استفاده می‌کنیم:
+ *       <input class="select2-search__field" aria-controls="select2-MapCity-results">
+ *       <ul id="select2-MapCity-results">
+ *   یعنی فهرست نتایجِ فیلد X همیشه id برابر  select2-<X>-results  دارد.
+ *   پیش از هر تایپی، بررسی می‌کنیم که aria-controls کادر جستجو دقیقاً
+ *   به همین فهرست اشاره کند. اگر نکند، تایپ نمی‌کنیم و خطا می‌دهیم.
+ *
+ * selectId  شناسه‌ی <select> اصلی، مثل 'MapCity'
+ * text      متنی که باید تایپ و انتخاب شود
+ * opts.exact       اگر true، فقط تطابق دقیق پذیرفته می‌شود
+ * opts.allowFirst  اگر true، در نبود تطابق، اولین گزینه انتخاب می‌شود
+ *                  (پیش‌فرض false — انتخاب کورکورانه خطرناک است)
+ *
+ * خروجی: { ok, picked, options[], reason }
+ */
+async function select2Pick(page, selectId, text, opts = {}) {
+  const { exact = false, allowFirst = false, verbose = true } = opts
+  const log = (m) => { if (verbose) console.log(m) }
+  const want = String(text || '').trim()
+  if (!want) return { ok: false, reason: 'متن خالی' }
+
+  const resultsId = `select2-${selectId}-results`
+
+  // ── ۰) هر Select2 بازِ دیگری را ببند ──
+  //    وگرنه ممکن است در کادر جستجوی فیلد قبلی تایپ کنیم.
+  const alreadyOpen = await page.evaluate(() =>
+    !!document.querySelector('.select2-container--open')).catch(() => false)
+  if (alreadyOpen) {
+    log('      ⓘ یک Select2 باز بود — بسته شد')
+    await page.keyboard.press('Escape').catch(() => {})
+    await page.evaluate(() => {
+      document.querySelectorAll('.select2-container--open')
+        .forEach((c) => c.classList.remove('select2-container--open'))
+    }).catch(() => {})
+    await humanPause(300, 600)
+  }
+
+  // ── ۱) باز کردن همین فیلد ──
+  const opened = await page.evaluate((id) => {
+    const sel = document.getElementById(id)
+    if (!sel) return 'no-select'
+    /* رابط Select2 معمولا خواهرِ بعدیِ <select> است، ولی همیشه نه.
+       اگر نبود، از روی .select2-container که aria-owns/‌فهرستش به
+       این select اشاره دارد پیدایش می‌کنیم. */
+    let ui = sel.nextElementSibling
+    if (!(ui && ui.classList && ui.classList.contains('select2-container'))) {
+      ui = (sel.parentElement || document)
+        .querySelector(`.select2-container`)
+    }
+    const trigger = ui && ui.querySelector
+      ? ui.querySelector('.select2-selection')
+      : null
+    if (!trigger) return 'no-ui'
+    trigger.scrollIntoView({ block: 'center' })
+    /* Select2 روی mousedown باز می‌شود */
+    trigger.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    trigger.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    return 'ok'
+  }, selectId).catch(() => 'err')
+
+  if (opened !== 'ok') {
+    log(`      ✖ باز نشد (${opened}) — ${selectId}`)
+    return { ok: false, reason: opened }
+  }
+  await humanPause(500, 1000)
+
+  // ── ۲) پیدا کردن کادر جستجوی *همین* فیلد ──
+  //     تنها راه مطمئن: aria-controls باید برابر select2-<id>-results باشد.
+  const boxSel = `input.select2-search__field[aria-controls="${resultsId}"]`
+  let box = await page.$(boxSel)
+
+  if (!box) {
+    /* بعضی نسخه‌های Select2 به‌جای aria-controls از aria-owns استفاده
+       می‌کنند یا فهرست را کمی دیرتر می‌سازند — کمی صبر کن. */
+    for (let i = 0; i < 10 && !box; i++) {
+      await page.waitForTimeout(300)
+      box = await page.$(boxSel)
+    }
+  }
+
+  if (!box) {
+    /* آخرین تلاش: اگر فهرستِ همین فیلد روی صفحه هست، کادر جستجوی
+       داخل همان dropdown را بردار. */
+    const dropBox = `.select2-dropdown:has(#${resultsId}) input.select2-search__field`
+    box = await page.$(dropBox).catch(() => null)
+  }
+
+  if (!box) {
+    /* هیچ راه مطمئنی نماند — تایپ نمی‌کنیم.
+       تایپ کورکورانه یعنی ریسک نوشتن در فیلد اشتباه. */
+    const openId = await page.evaluate(() => {
+      const i = document.querySelector('.select2-container--open input.select2-search__field')
+      return i ? (i.getAttribute('aria-controls') || '(بدون aria-controls)') : '(هیچ کادری باز نیست)'
+    }).catch(() => '?')
+    log(`      ✖ کادر جستجوی «${selectId}» پیدا نشد — کادرِ باز: ${openId}`)
+    await page.keyboard.press('Escape').catch(() => {})
+    return { ok: false, reason: 'wrong-or-missing-search-box' }
+  }
+
+  // ── ۲.۵) تایید نهایی پیش از تایپ: مطمئن شو فوکوس روی همین کادر است ──
+  await box.click().catch(() => {})
+  await humanPause(200, 450)
+
+  const focusOk = await page.evaluate((rid) => {
+    const a = document.activeElement
+    if (!a || !a.classList || !a.classList.contains('select2-search__field')) return false
+    return a.getAttribute('aria-controls') === rid
+  }, resultsId).catch(() => false)
+
+  if (!focusOk) {
+    log(`      ✖ فوکوس روی کادر «${selectId}» ننشست — تایپ نشد (جلوگیری از نوشتن در فیلد اشتباه)`)
+    await page.keyboard.press('Escape').catch(() => {})
+    return { ok: false, reason: 'focus-mismatch' }
+  }
+
+  // کاراکتر به کاراکتر — سایت با هر حرف یک درخواست AJAX می‌زند
+  for (const ch of want) {
+    await page.keyboard.type(ch, { delay: 0 }).catch(() => {})
+    await humanPause(90, 220)
+  }
+  log(`      ⌨ در «${selectId}» تایپ شد: «${want}»`)
+
+  // ── ۳) صبر تا نتایجِ *همین* فهرست بیاید ──
+  //     «در حال جستجو» و «موردی یافت نشد» را هم تشخیص می‌دهیم
+  let options = []
+  for (let i = 0; i < 40; i++) {          // تا ۲۰ ثانیه
+    await page.waitForTimeout(500)
+    const st = await page.evaluate((rid) => {
+      const ul = document.getElementById(rid)
+      if (!ul) return { state: 'none', items: [] }
+      const msg = ul.querySelector('.select2-results__message')
+      if (msg) {
+        const t = (msg.textContent || '').trim()
+        if (/یافت نشد/.test(t)) return { state: 'empty', items: [] }
+        return { state: 'loading', items: [] }   // «در حال جستجو…»
+      }
+      const items = Array.from(ul.querySelectorAll('li.select2-results__option'))
+        .filter((li) => !li.classList.contains('select2-results__message'))
+        .map((li) => (li.textContent || '').trim())
+        .filter(Boolean)
+      return { state: items.length ? 'ready' : 'loading', items }
+    }, resultsId).catch(() => ({ state: 'err', items: [] }))
+
+    if (st.state === 'ready') { options = st.items; break }
+    if (st.state === 'empty') {
+      log(`      ✖ سایت گفت «موردی یافت نشد» برای «${want}»`)
+      await page.keyboard.press('Escape').catch(() => {})
+      return { ok: false, reason: 'not-found', options: [] }
+    }
+  }
+
+  if (!options.length) {
+    log(`      ✖ فهرست نتایج «${selectId}» نیامد`)
+    await page.keyboard.press('Escape').catch(() => {})
+    return { ok: false, reason: 'no-results' }
+  }
+
+  log(`      ⓘ ${options.length} نتیجه: ${options.slice(0, 5).join(' | ')}${options.length > 5 ? ' …' : ''}`)
+  await humanPause(400, 900)
+
+  // ── ۴) انتخاب بهترین گزینه — فقط از فهرستِ همین فیلد ──
+  const picked = await page.evaluate(({ want, exact, allowFirst, rid }) => {
+    const fold = (t) => String(t || '')
+      .replace(/[\u064A\u0649]/g, '\u06CC')
+      .replace(/\u0643/g, '\u06A9')
+      .replace(/[\u0622\u0623\u0625]/g, '\u0627')
+      .replace(/[\u064B-\u0652\u0640\u200c]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    const ul = document.getElementById(rid)
+    if (!ul) return null
+    const items = Array.from(ul.querySelectorAll('li.select2-results__option'))
+      .filter((li) => !li.classList.contains('select2-results__message'))
+    if (!items.length) return null
+
+    const w = fold(want)
+    let hit =
+      items.find((li) => fold(li.textContent) === w) ||                          // دقیق
+      (exact ? null : items.find((li) => fold(li.textContent).startsWith(w))) || // شروع با
+      (exact ? null : items.find((li) => fold(li.textContent).includes(w)))      // شامل
+    /* اولین گزینه فقط وقتی که صریحا اجازه داده شده باشد.
+       پیش‌تر این کار همیشه انجام می‌شد و می‌توانست شهر اشتباه ثبت کند. */
+    if (!hit && allowFirst) hit = items[0]
+    if (!hit) return null
+
+    const label = (hit.textContent || '').trim()
+    hit.scrollIntoView({ block: 'center' })
+    /* Select2 روی mouseup انتخاب می‌کند، ولی برای اطمینان هر سه را می‌زنیم */
+    hit.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    hit.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    hit.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    return label
+  }, { want, exact, allowFirst, rid: resultsId }).catch(() => null)
+
+  if (!picked) {
+    log(`      ✖ گزینه‌ی مناسب برای «${want}» نبود`)
+    log(`         موجود: ${options.slice(0, 10).join(' | ')}`)
+    await page.keyboard.press('Escape').catch(() => {})
+    return { ok: false, reason: 'no-match', options }
+  }
+
+  await humanPause(600, 1200)
+
+  // ── ۵) تایید اینکه واقعا در *همین* فیلد نشست ──
+  const shown = await page.evaluate((id) => {
+    const sel = document.getElementById(id)
+    if (!sel) return { text: '', value: '' }
+    let ui = sel.nextElementSibling
+    if (!(ui && ui.classList && ui.classList.contains('select2-container'))) {
+      ui = (sel.parentElement || document).querySelector('.select2-container')
+    }
+    const r = ui && ui.querySelector ? ui.querySelector('.select2-selection__rendered') : null
+    let text = ''
+    if (r && !r.querySelector('.select2-selection__placeholder')) {
+      text = (r.textContent || '').replace(/×/g, '').trim()
+    }
+    return { text, value: sel.value || '' }
+  }, selectId).catch(() => ({ text: '', value: '' }))
+
+  if (!shown.text) {
+    log(`      ⚠ «${picked}» کلیک شد ولی در کادر «${selectId}» ننشست`)
+    return { ok: false, reason: 'not-applied', picked, options }
+  }
+
+  log(`      ✔ ${selectId} = ${shown.text}${shown.value ? ` (کد ${shown.value})` : ''}`)
+  return { ok: true, picked: shown.text, value: shown.value, options }
 }
 
 async function unhide(page, id) {
@@ -981,33 +1311,89 @@ async function pickCity(page, sel, cityName) {
   }, { s: sel, want: cityName }).catch(() => null)
 }
 
-async function fillLocationStep(page, cfg, loc, OUT, tag, verbose = true) {
+async function fillLocationStep(page, cfg, loc, OUT, tag, verbose = true, plate = null) {
   const log = (m) => { if (verbose) console.log(m) }
 
   await unhide(page, cfg.wrapperId)
-  await page.waitForTimeout(300)
+  await humanPause(600, 1200)
 
-  const pv = PROVINCES[loc.province]
-  if (!pv) { log(`   ✖ استان «${loc.province}» شناخته نشد`); return false }
-  await pickSelect(page, cfg.state, pv)
-  log(`   ✔ استان: ${loc.province} (${pv})`)
-  await page.waitForTimeout(800)
-
-  const city = await pickCity(page, cfg.city, loc.city)
-  if (!city || !city.text) {
-    log(`   ✖ شهر «${loc.city}» پیدا نشد`)
-    if (city && city.list) log(`      موجود: ${city.list.join(' | ')}`)
-    await page.screenshot({ path: path.join(OUT, `${tag}-nocity.png`), fullPage: true }).catch(() => {})
-    return false
+  /* ── استان ──
+     اگر کاربر «تشخیص خودکار» را انتخاب کرده باشد، استان از کد ایران
+     پلاک درمی‌آید. وگرنه همان چیزی که خودش نوشته. */
+  let province = loc.province
+  if (loc.autoProvince && plate) {
+    const guess = provinceFromPlate(plate)
+    if (guess) {
+      province = guess
+      log(`   ⓘ استان از پلاک تشخیص داده شد: ${guess}`)
+    } else {
+      log(`   ⚠ استان از پلاک تشخیص داده نشد — از مقدار پروفایل استفاده می‌شود`)
+    }
   }
-  log(`   ✔ شهر: ${city.text}`)
+
+  const pv = PROVINCES[province]
+  if (!pv) { log(`   ✖ استان «${province}» شناخته نشد`); return false }
+  await pickSelect(page, cfg.state, pv)
+  log(`   ✔ استان: ${province} (${pv})`)
+  await humanPause(1200, 2200)   // فرصت به AJAX شهرها
+
+  /* ── شهرستان (Select2 اول) ──
+     ورودی درست: نام شهر پروفایل. اگر خالی بود، نام استان.
+     exact نمی‌گذاریم چون سایت گاهی «سیرجان» را «شهرستان سیرجان»
+     می‌نویسد، ولی allowFirst هم نمی‌دهیم تا شهر بی‌ربط انتخاب نشود. */
+  if (cfg.mapCity) {
+    const cityName = (loc.city || province || '').trim()
+    log(`   → ${cfg.mapCity} (شهرستان): تایپ «${cityName}»`)
+    const r = await select2Pick(page, cfg.mapCity, cityName, { verbose, allowFirst: false })
+    if (!r.ok) {
+      log(`   ✖ شهرستان «${cityName}» انتخاب نشد (${r.reason})`)
+      if (r.options && r.options.length) log(`      موجود: ${r.options.join(' | ')}`)
+      await page.screenshot({ path: path.join(OUT, `${tag}-nomapcity.png`), fullPage: true }).catch(() => {})
+      return false
+    }
+    /* شهرستانِ انتخاب‌شده معمولا فهرست فیلد بعدی را با AJAX عوض می‌کند */
+    await humanPause(1200, 2200)
+  }
+
+  /* ── جستجوی آدرس / محله (Select2 دوم) ──
+     ⚠ این فیلد شهرستان نیست. ورودی درستش متنِ آدرس است، نه نام شهر.
+     ترتیب تلاش:  locality → آدرس → شهر
+     اگر پیدا نشد، ادامه می‌دهیم چون فیلد آدرس متنی جداگانه هم پر می‌شود. */
+  if (cfg.addressSearch) {
+    const candidates = [loc.locality, loc.address, loc.city]
+      .map((x) => String(x || '').trim())
+      .filter(Boolean)
+
+    let done = false
+    for (const q of candidates) {
+      /* آدرس‌های بلند را کوتاه می‌کنیم — Select2 با جمله‌ی طولانی
+         چیزی پیدا نمی‌کند. اولین دو بخشِ آدرس معمولا کافی است. */
+      const term = q.length > 30 ? q.split(/[،,\-]/)[0].trim() : q
+      if (!term) continue
+      log(`   → ${cfg.addressSearch} (جستجوی آدرس): تایپ «${term}»`)
+      const r2 = await select2Pick(page, cfg.addressSearch, term, { verbose, allowFirst: false })
+      if (r2.ok) { done = true; await humanPause(800, 1500); break }
+      log(`      ⓘ «${term}» نتیجه نداد (${r2.reason})`)
+      await humanPause(400, 800)
+    }
+    if (!done) log('   ⚠ جستجوی آدرس نتیجه نداد — با آدرس متنی ادامه می‌دهیم')
+  }
+
+  /* ── dropdown قدیمی شهر (اگر هنوز روی صفحه باشد) ── */
+  if (cfg.city) {
+    const exists = await page.$(cfg.city)
+    if (exists) {
+      const city = await pickCity(page, cfg.city, loc.city)
+      if (city && city.text) log(`   ✔ شهر: ${city.text}`)
+    }
+  }
 
   const setVal = async (sel, val) => {
     if (!val) return
     const el = await page.$(sel); if (!el) return
     await el.click({ clickCount: 3 }).catch(() => {})
     await el.fill('').catch(() => {})
-    await el.type(String(val), { delay: 10 })
+    await el.type(String(val), { delay: 12 })
     await page.evaluate((s) => {
       const i = document.querySelector(s); if (!i) return
       i.dispatchEvent(new Event('input', { bubbles: true }))
@@ -1015,6 +1401,7 @@ async function fillLocationStep(page, cfg, loc, OUT, tag, verbose = true) {
       i.dispatchEvent(new Event('blur', { bubbles: true }))
       if (window.jQuery) { try { window.jQuery(i).trigger('change').trigger('blur') } catch (e) {} }
     }, sel).catch(() => {})
+    await humanPause(300, 700)
   }
 
   if (loc.postalCode) await setVal(cfg.postal, loc.postalCode)
@@ -1022,7 +1409,7 @@ async function fillLocationStep(page, cfg, loc, OUT, tag, verbose = true) {
   log(`   ✔ آدرس: ${loc.address}`)
 
   await page.screenshot({ path: path.join(OUT, `${tag}-filled.png`), fullPage: true }).catch(() => {})
-  await page.waitForTimeout(200)
+  await humanPause(500, 1000)
 
   const nb = await page.$(cfg.nextBtn)
   if (!nb) { log(`   ✖ ${cfg.nextBtn} نیست`); return false }
@@ -1044,6 +1431,8 @@ async function fillLocationStep(page, cfg, loc, OUT, tag, verbose = true) {
       return Array.from(new Set(o)).slice(0, 8)
     }).catch(() => [])
     errs.forEach(e => log('      • ' + e))
+    const sw = await readSwalError(page)
+    if (sw) log(`      • پاپ‌آپ: ${sw}`)
     await page.screenshot({ path: path.join(OUT, `${tag}-error.png`), fullPage: true }).catch(() => {})
   }
   return active
@@ -1052,12 +1441,16 @@ async function fillLocationStep(page, cfg, loc, OUT, tag, verbose = true) {
 const STEP_ORIGIN = {
   label: 'گام ۵: مبدا بارگیری', wrapperId: 'normalmabda',
   state: '#ddStateSource', city: '#ddCitySource',
+  // Select2 های نقشه — باید تایپ و انتخاب شوند
+  mapCity: 'MapCity', addressSearch: 'AddressSearch',
   postal: '#sourcePostalCode', address: '#txtAddressSource',
   nextBtn: '#btnGoLVL6', nextPane: 'pills-6',
 }
 const STEP_DEST = {
   label: 'گام ۶: مقصد تخلیه', wrapperId: 'normalmagsad',
   state: '#ddStateDest', city: '#ddCityDest',
+  // در گام ۶ شناسه‌ها عدد ۲ دارند
+  mapCity: 'MapCity2', addressSearch: 'AddressSearch2',
   postal: '#destPostalCode', address: '#txtAddressDest',
   nextBtn: '#btnGoLVL7', nextPane: 'pills-7',
 }
@@ -1341,6 +1734,40 @@ const STEP_RECEIVER = {
   nextBtn: '#btnGoLVL3', nextPane: 'pills-3',
 }
 
+/* ═══════════ تشخیص خطای نام کاربری / رمز عبور ═══════════
+   سایت هنگام اشتباه بودن مشخصات، پاپ‌آپ قرمز نشان می‌دهد:
+       «کاربری با این مشخصات در سامانه یافت نشد.»
+   این خطا با تکرار حل نمی‌شود — باید به کاربر گفته شود. */
+
+/** الگوهای «مشخصات حساب اشتباه است» */
+const BAD_CREDENTIALS_RE = /کاربری با این مشخصات|کاربری یافت نشد|کاربر یافت نشد|نام کاربری یا رمز|رمز عبور اشتباه|کلمه عبور اشتباه|رمز اشتباه|اطلاعات ورود نادرست|نام کاربری اشتباه/
+
+/** الگوهای «حساب مسدود یا غیرفعال است» */
+const ACCOUNT_LOCKED_RE = /حساب.*مسدود|حساب.*قفل|کاربر.*غیرفعال|دسترسی شما.*مسدود|حساب شما.*تعلیق|غیرفعال شده/
+
+/**
+ * خطای ورود را دسته‌بندی می‌کند و پیام فارسی قابل‌فهم می‌سازد.
+ * خروجی: { kind, message } یا null اگر مربوط به اعتبار نباشد
+ */
+function classifyCredentialError(raw) {
+  const t = String(raw || '')
+  if (!t) return null
+
+  if (ACCOUNT_LOCKED_RE.test(t)) {
+    return {
+      kind: 'account_locked',
+      message: 'حساب باربگ مسدود یا غیرفعال شده است — با پشتیبانی سامانه تماس بگیرید',
+    }
+  }
+  if (BAD_CREDENTIALS_RE.test(t)) {
+    return {
+      kind: 'bad_credentials',
+      message: 'نام کاربری (کد ملی) یا رمز عبور حساب باربگ اشتباه است — از صفحه «حساب‌های باربگ» اصلاحش کنید',
+    }
+  }
+  return null
+}
+
 async function waitLoginResult(page, maxMs = 45000) {
   const t0 = Date.now()
   let lastLog = 0
@@ -1352,13 +1779,56 @@ async function waitLoginResult(page, maxMs = 45000) {
   // الگوهای خطای قطعی — تکرار بی‌فایده است
   const FATAL = /رمز|کلمه عبور|کاربری یافت نشد|کد ملی|نام کاربری|قفل|مسدود|غیرفعال/
 
+  /* پاپ‌آپ خطا از نوع toast است و فقط ۵ ثانیه روی صفحه می‌ماند، بعد
+     خودش محو می‌شود و سایت دوباره صفحه‌ی Login را نشان می‌دهد.
+     اگر دیر بخوانیم، پیام را از دست می‌دهیم و به‌جای «رمز اشتباه»
+     «زمان انتظار تمام شد» می‌گیریم — که اشتباها تکرارپذیر حساب می‌شود.
+     پس: اولین پیامی که دیدیم را نگه می‌داریم. */
+  let seenCredError = null
+
   while (Date.now() - t0 < maxMs) {
+    /* قبل از هر چیز، پاپ‌آپ خطا را بخوان — چون زود محو می‌شود */
+    if (!seenCredError) {
+      const quick = await page.evaluate(() => {
+        const pop = document.querySelector('.swal2-popup.swal2-icon-error')
+        if (pop && pop.offsetParent !== null) {
+          const b = (document.getElementById('swal2-html-container')?.textContent || '').trim()
+          const h = (document.getElementById('swal2-title')?.textContent || '').trim()
+          if (b || h) return (b || h).replace(/\s+/g, ' ').slice(0, 200)
+        }
+        return ''
+      }).catch(() => '')
+      if (quick) {
+        const c = classifyCredentialError(quick)
+        if (c) seenCredError = { raw: quick, ...c }
+      }
+    }
+    if (seenCredError) {
+      return {
+        ok: false, error: seenCredError.message, rawError: seenCredError.raw,
+        fatal: true, credentialKind: seenCredError.kind,
+        waited: Math.round((Date.now() - t0) / 1000),
+      }
+    }
+
     // ۱) از صفحه‌ی ورود خارج شدیم؟  (مهم‌ترین نشانه‌ی موفقیت)
     let url = ''
     try { url = page.url() } catch { /* در حال ناوبری */ }
     if (url && !url.includes('Login')) {
       await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
-      return { ok: true, waited: Math.round((Date.now() - t0) / 1000), transient }
+
+      /* گاهی سایت لحظه‌ای از /Login خارج می‌شود و دوباره برمی‌گردد.
+         مطمئن شو واقعا وارد شده‌ایم، نه اینکه فقط در حال ریدایرکت باشیم. */
+      const back = await page.evaluate(() => {
+        const u = location.href
+        const hasLogin = !!document.querySelector('#NationalCode, #user-password, #inter')
+        return /\/Account\/Login/i.test(u) || hasLogin
+      }).catch(() => false)
+
+      if (!back) {
+        return { ok: true, waited: Math.round((Date.now() - t0) / 1000), transient }
+      }
+      // برگشتیم به صفحه‌ی ورود ⇒ وارد نشدیم؛ حلقه ادامه می‌دهد
     }
 
     // ۲) نشانه‌ی دوم موفقیت: فرم ورود از صفحه رفته یا فرم بارنامه آمده
@@ -1407,7 +1877,7 @@ async function waitLoginResult(page, maxMs = 45000) {
       console.log(`      ⏱ هنوز در حال ورود... (${el}s)`)
     }
 
-    await page.waitForTimeout(500).catch(() => {})
+    await page.waitForTimeout(250).catch(() => {})
   }
 
   return {
@@ -1625,6 +2095,10 @@ async function runWaybillOnce(opts) {
 
   {
     const nav = await gotoR(page, LOGIN_URL, 'صفحه ورود')
+    if (nav === 'BLOCKED') {
+      // مرورگر را ببند و به لایه‌ی بیرونی بگو صبر کند
+      return fail('IP بلاک شد هنگام باز کردن صفحه‌ی ورود', 'block')
+    }
     if (nav === 'TIMEOUT') {
       console.log('   ⚠ تایم‌اوت — بستن مرورگر و صبر ۲ تا ۵ دقیقه')
       await browser.close().catch(() => {})
@@ -1632,7 +2106,9 @@ async function runWaybillOnce(opts) {
       browser = await chromium.launch(LAUNCH)
       ctx = await browser.newContext(CTX)
       page = await ctx.newPage()
-      if (!await gotoR(page, LOGIN_URL, 'صفحه ورود'))
+      const nav1b = await gotoR(page, LOGIN_URL, 'صفحه ورود')
+      if (nav1b === 'BLOCKED') return fail('IP بلاک شد', 'block')
+      if (!nav1b)
         return fail('بعد از تایم‌اوت، اتصال به صفحه ورود برقرار نشد', 'timeout')
     } else if (!nav) return fail('اتصال به صفحه ورود برقرار نشد (بلاک یا قطعی شبکه)', 'block')
   }
@@ -1653,7 +2129,8 @@ async function runWaybillOnce(opts) {
     ctx = await browser.newContext(CTX)
     page = await ctx.newPage()
     console.log('   ↻ مرورگر تازه — تلاش مجدد')
-    if (!await gotoR(page, LOGIN_URL, 'صفحه ورود')) return fail('اتصال نشد (بلاک یا قطعی شبکه)', 'block')
+    const navBusy = await gotoR(page, LOGIN_URL, 'صفحه ورود')
+    if (navBusy === 'BLOCKED' || !navBusy) return fail('اتصال نشد (بلاک یا قطعی شبکه)', 'block')
     await page.waitForTimeout(2500)
     await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
   }
@@ -1664,6 +2141,8 @@ async function runWaybillOnce(opts) {
   let logged = false
   let loginErr = 'ورود ناموفق'
   let captchaAttempts = 0
+  let loginFatalKind = null   // 'bad_credentials' یا 'account_locked'
+  let failedWithGoodCaptcha = 0
   for (let att = 1; att <= 6; att++) {
     captchaAttempts = att
     const t = await classifyTemplate(page)
@@ -1694,9 +2173,39 @@ async function runWaybillOnce(opts) {
       console.log(`   ✅ ورود موفق (${res.waited}s)` + (res.transient ? '  [با وجود خطای موقتی سایت]' : ''))
       break
     }
-    if (res.fatal) { loginErr = res.error; console.log(`   🛑 خطای قطعی: ${res.error}`); break }
+    if (res.fatal) {
+      loginErr = res.error
+      if (res.credentialKind) {
+        loginFatalKind = res.credentialKind
+        console.log(`   🛑 ${res.error}`)
+        if (res.rawError) console.log(`      پیام سایت: «${res.rawError}»`)
+        console.log(`      حساب: ${credentials.username}`)
+      } else {
+        console.log(`   🛑 خطای قطعی: ${res.error}`)
+      }
+      break
+    }
     loginErr = res.error || loginErr
     console.log(`   ✖ ورود نشد (${res.waited}s)${res.error ? ' — ' + res.error.slice(0, 90) : ''}`)
+
+    /* پاپ‌آپ ممکن است قبل از خواندن محو شده باشد. اگر سه بار پشت سر هم
+       با کپچای درست وارد نشدیم و هنوز روی صفحه‌ی ورودیم، تقریبا قطعی است
+       که مشخصات حساب اشتباه است — وگرنه ساعت‌ها بی‌فایده تلاش می‌کنیم
+       و ممکن است حساب در سامانه قفل شود. */
+    if (!res.transient) failedWithGoodCaptcha++
+    if (failedWithGoodCaptcha >= 3) {
+      const stillLogin = await page.evaluate(() =>
+        !!document.querySelector('#NationalCode, #user-password, #inter')).catch(() => false)
+      if (stillLogin) {
+        loginFatalKind = 'bad_credentials'
+        loginErr = 'نام کاربری (کد ملی) یا رمز عبور حساب باربگ اشتباه است — ' +
+                   'از صفحه «حساب‌های باربگ» اصلاحش کنید'
+        console.log(`   🛑 ${loginErr}`)
+        console.log(`      پس از ${failedWithGoodCaptcha} تلاش با کپچای درست، هنوز روی صفحه‌ی ورودیم`)
+        console.log(`      حساب: ${credentials.username}`)
+        break
+      }
+    }
 
     if (res.transient) {
       console.log('   ↻ رفرش کامل صفحه (سایت خطای موقتی داشت)...')
@@ -1710,11 +2219,12 @@ async function runWaybillOnce(opts) {
     await (await page.$('#NationalCode'))?.fill(credentials.username)
     await (await page.$('#user-password'))?.fill(credentials.password)
   }
-  if (!logged) return fail(loginErr)
+  if (!logged) return fail(loginErr, loginFatalKind || 'error')
 
   console.log('\n→ باز کردن فرم بارنامه...')
   {
     const nav2 = await gotoR(page, TARGET_URL, 'فرم بارنامه')
+    if (nav2 === 'BLOCKED') return fail('IP بلاک شد هنگام باز کردن فرم بارنامه', 'block')
     if (nav2 === 'TIMEOUT') return fail('تایم‌اوت هنگام باز کردن فرم بارنامه', 'timeout')
     if (!nav2) return fail('فرم بارنامه باز نشد (بلاک یا قطعی شبکه)', 'block')
   }
@@ -1792,12 +2302,12 @@ async function runWaybillOnce(opts) {
   if (ok4) {
     console.log('\n═══ ' + STEP_ORIGIN.label + ' ═══')
     lastStep = 'مبدا'
-    ok5 = await step(5, await fillLocationStep(page, STEP_ORIGIN, d.origin, OUT, 'step5'), 'مبدا')
+    ok5 = await step(5, await fillLocationStep(page, STEP_ORIGIN, d.origin, OUT, 'step5', true, d.driver.plate), 'مبدا')
   }
   if (ok5) {
     console.log('\n═══ ' + STEP_DEST.label + ' ═══')
     lastStep = 'مقصد'
-    ok6 = await step(6, await fillLocationStep(page, STEP_DEST, d.destination, OUT, 'step6'), 'مقصد')
+    ok6 = await step(6, await fillLocationStep(page, STEP_DEST, d.destination, OUT, 'step6', true, d.driver.plate), 'مقصد')
   }
   if (ok6) {
     console.log('\n═══ گام ۷: مشخصات مبدا و مقصد ═══')
@@ -1984,6 +2494,15 @@ async function runWaybill(opts) {
 
     const kind = last.kind || 'error'
 
+    /* مشخصات حساب اشتباه یا حساب مسدود ⇒ هرگز تکرار نکن.
+       تا کاربر رمز را اصلاح نکند، هزار بار هم تلاش کنیم همان نتیجه است،
+       و تلاش‌های پیاپی ممکن است باعث قفل شدن حساب در سامانه شود. */
+    if (kind === 'bad_credentials' || kind === 'account_locked') {
+      console.log(`   🛑 ${last.error}`)
+      console.log('      تلاش مجدد انجام نمی‌شود — اول مشخصات حساب را درست کنید')
+      return last
+    }
+
     // خطای دائمی ⇒ تکرار بی‌فایده است
     if (isPermanentError(last.error || '')) {
       console.log(`   🛑 خطای دائمی — تکرار نمی‌شود: ${last.error}`)
@@ -2021,7 +2540,7 @@ async function runWaybill(opts) {
     }
 
     /* مدت صبر — دقیقا همان اعداد test-step1.js:
-         بلاک IP  : waitBack(180000 + rand*120000)  →  ۳ تا ۵ دقیقه
+         بلاک IP  : مرورگر بسته می‌شود، ۳ تا ۵ دقیقه صبر
          سرور مشغول: rand(2*60*1000, 5*60*1000)       →  ۲ تا ۵ دقیقه
          تایم‌اوت  : rand(2*60*1000, 5*60*1000)      →  ۲ تا ۵ دقیقه  */
     const waitMs =
@@ -2034,7 +2553,7 @@ async function runWaybill(opts) {
     console.log(`      ${last.error || ''}`)
     console.log(`   ↻ مرورگر بسته شد — صبر ${fmtT(Math.round(waitMs / 1000))}، بعد شروع کامل از صفر`)
 
-    /* بلاک یا مشغولی ⇒ فعالانه بپاییم (probe هر ۱۵ ثانیه، مثل waitBack).
+    /* بلاک یا مشغولی ⇒ فعالانه بپاییم (هر ۱۵ ثانیه، بدون مرورگر).
        اگر سایت زودتر برگشت، بلافاصله ادامه می‌دهیم به‌جای خواب کور. */
     if (kind === 'block' || kind === 'busy') {
       const t0 = Date.now()
@@ -2060,6 +2579,631 @@ async function runWaybill(opts) {
   return last
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   واردات خودکار مشخصات از آخرین بارنامه‌ی ثبت‌شده
+
+   مسیر:
+     ورود  →  /barname/History/History
+           →  کلیک روی «جزئیات» (#btnDetailfirst)
+           →  /Barname/History/RealBarnameDetail
+           →  خواندن همه‌ی فیلدها
+
+   هدف: کاربر نیازی به وارد کردن دستی اطلاعات نداشته باشد.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** یکسان‌سازی حروف عربی/فارسی برای مقایسه */
+function fold_(t) {
+  return String(t || '')
+    .replace(/[\u064A\u0649]/g, '\u06CC')
+    .replace(/\u0643/g, '\u06A9')
+    .replace(/[\u0622\u0623\u0625]/g, '\u0627')
+    .replace(/[\u064B-\u0652\u0640\u200c]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * نام کاربر واردشده را از نوار بالای سایت می‌خواند.
+ *
+ *   <span class="user-name mbzero">علي پرون</span>
+ *   <small class="user-status mfo">خوش آمدید</small>
+ *
+ * این منبع از فیلد #driverName صفحه‌ی جزئیات مطمئن‌تر است، چون
+ * در هر صفحه‌ای بعد از ورود در دسترس است — حتی اگر تاریخچه خالی باشد.
+ */
+async function readLoggedInUserName(page) {
+  return page.evaluate(() => {
+    const clean = (t) => String(t || '').replace(/[\u200c\s]+/g, ' ').trim()
+
+    // ۱) دقیق‌ترین: span.user-name داخل منوی کاربر
+    for (const el of document.querySelectorAll('span.user-name, small.user-name')) {
+      const t = clean(el.textContent)
+      // متن‌های تزئینی را رد کن
+      if (!t || t.length < 3) continue
+      if (/خوش آمدید|نام کاربر|خروج|ورود/.test(t)) continue
+      return t
+    }
+
+    // ۲) نسخه‌ی جایگزین: هر عنصری کنار «خوش آمدید»
+    for (const el of document.querySelectorAll('.user-status')) {
+      if (!/خوش آمدید/.test(el.textContent || '')) continue
+      const sib = el.parentElement?.querySelector('.user-name')
+      const t = clean(sib?.textContent)
+      if (t && t.length >= 3) return t
+    }
+    return ''
+  }).catch(() => '')
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   رفتار انسانی — جلوگیری از بلاک شدن IP
+
+   سایت به سرعت حساس است. اگر صفحات را تند تند باز کنیم، فیلدها را
+   آنی پر کنیم و بلافاصله کلیک کنیم، الگوی رباتی می‌سازد و IP بلاک
+   می‌شود. این توابع مکث‌های تصادفی و شبه‌انسانی اضافه می‌کنند.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** مکث تصادفی بین min و max میلی‌ثانیه */
+function humanPause(min, max) {
+  return new Promise((r) => setTimeout(r, Math.floor(min + Math.random() * (max - min))))
+}
+
+/** مکث کوتاه — بین دو فیلد یا دو کلیک کوچک */
+const shortPause = () => humanPause(600, 1400)
+/** مکث متوسط — قبل از کلیک روی دکمه‌ی مهم */
+const mediumPause = () => humanPause(1500, 3000)
+/** مکث بلند — بعد از باز شدن صفحه، تا کاربر «نگاه کند» */
+const longPause = () => humanPause(3000, 6000)
+
+/**
+ * صبر می‌کند تا صفحه واقعا کامل لود شود:
+ *   ۱) شبکه آرام بگیرد (networkidle)
+ *   ۲) لایه‌ی loading برداشته شود
+ *   ۳) یک مکث انسانی
+ */
+async function settlePage(page, label = '') {
+  // شبکه آرام شود — ولی بی‌نهایت منتظر نمان
+  await page.waitForLoadState('domcontentloaded', { timeout: 20000 }).catch(() => {})
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {})
+
+  // لایه‌ی loading سایت
+  for (let i = 0; i < 30; i++) {
+    const busy = await page.evaluate(() => {
+      const l = document.getElementById('loading')
+      if (l && l.offsetParent !== null) return true
+      return !!document.querySelector('.blockUI, .loading-overlay, .page-loader')
+    }).catch(() => false)
+    if (!busy) break
+    await page.waitForTimeout(400)
+  }
+  await page.evaluate(() => {
+    document.getElementById('loading')?.remove()
+    document.querySelectorAll('.blockUI, .loading-overlay, .page-loader').forEach((e) => e.remove())
+  }).catch(() => {})
+
+  await longPause()
+  if (label) console.log(`   ⏸ ${label} کامل لود شد`)
+}
+
+/**
+ * تایپ انسانی داخل یک فیلد:
+ *   کلیک → مکث → تایپ کاراکتر به کاراکتر با سرعت متغیر
+ */
+async function humanType(page, selector, text) {
+  const el = await page.$(selector)
+  if (!el || !text) return false
+
+  await el.click().catch(() => {})
+  await humanPause(250, 600)
+  await el.fill('').catch(() => {})
+  await humanPause(150, 400)
+
+  // سرعت تایپ متغیر — انسان یکنواخت تایپ نمی‌کند
+  for (const ch of String(text)) {
+    await page.keyboard.type(ch, { delay: 0 }).catch(() => {})
+    await humanPause(60, 190)
+  }
+
+  await humanPause(200, 500)
+  await page.evaluate((s) => {
+    const i = document.querySelector(s)
+    if (!i) return
+    i.dispatchEvent(new Event('input', { bubbles: true }))
+    i.dispatchEvent(new Event('change', { bubbles: true }))
+    i.dispatchEvent(new Event('blur', { bubbles: true }))
+    if (window.jQuery) { try { window.jQuery(i).trigger('change').trigger('blur') } catch (e) {} }
+  }, selector).catch(() => {})
+  return true
+}
+
+/** کلیک انسانی: مکث قبل، کلیک، مکث بعد */
+async function humanClick(page, selector) {
+  const el = await page.$(selector)
+  if (!el) return false
+  await mediumPause()
+  await el.click().catch(async () => {
+    await page.evaluate((s) => document.querySelector(s)?.click(), selector).catch(() => {})
+  })
+  await shortPause()
+  return true
+}
+
+const HISTORY_URL = `${SITE}/barname/History/History`
+
+/** حروف پلاک: مقدار عددی select → حرف فارسی */
+const PLATE_LETTER_BY_VALUE = Object.fromEntries(
+  Object.entries(PLATE_LETTERS).map(([k, v]) => [v, k]),
+)
+
+/**
+ * رشته‌ی مبدا/مقصد سایت را به استان و شهر و آدرس تجزیه می‌کند.
+ * نمونه: «کرمان - سیرجان - خیابان ابن سینا، خیابان بدر جنوبی»
+ */
+function splitLocation(raw) {
+  const t = String(raw || '').replace(/\s+/g, ' ').trim()
+  if (!t) return { province: '', city: '', address: '' }
+
+  const parts = t.split(/\s*[-–—/|،,]\s*/).filter(Boolean)
+  if (parts.length >= 3) {
+    return { province: parts[0], city: parts[1], address: parts.slice(2).join('، ') }
+  }
+  if (parts.length === 2) return { province: parts[0], city: parts[1], address: '' }
+  return { province: t, city: t, address: '' }
+}
+
+/** «علي پرون» → { firstName:'علي', lastName:'پرون' } */
+function splitPersonName(raw) {
+  const t = String(raw || '').replace(/\s+/g, ' ').trim()
+  if (!t) return { firstName: '', lastName: '', full: '' }
+  const p = t.split(' ')
+  return { firstName: p[0] || '', lastName: p.slice(1).join(' ') || '', full: t }
+}
+
+/** فقط ارقام لاتین (کاما و «ریال» و … حذف) */
+function onlyDigits(raw) {
+  return toLatin(raw).replace(/\D/g, '')
+}
+
+/* ═══════════ خواندن جدول تاریخچه ═══════════
+   ستون‌ها:
+     0 ردیف | 1 تاریخ | 2 زمان | 3 فرستنده | 4 گیرنده | 5 راننده
+     6 خودرو | 7 ارزش بار | 8 بیمه | 9 مبدا | 10 مقصد
+     11 کد رهگیری | 12 عملیات
+
+   آدرس کامل در ویژگی title سلول مبدا/مقصد است:
+     «کرمان، سیرجان، خیابان ابن سینا، خیابان بدر جنوبی-سیرجان-کرمان»
+      └─────────── آدرس ───────────┘ └─شهر─┘ └استان┘
+   ═══════════════════════════════════════════ */
+
+/** «45|923-ع-17» → { twoDigit:'45', threeDigit:'923', letter:'ع', iran:'17' } */
+function parsePlateFromHistory(raw) {
+  // فاصله‌ها را فقط برای قالب اصلی حذف می‌کنیم؛ قالب جایگزین به فاصله نیاز دارد
+  const spaced = toLatin(raw).replace(/\s+/g, ' ').trim()
+  const t = spaced.replace(/\s+/g, '')
+  const m = t.match(/(\d+)\s*\|\s*(\d+)\s*-\s*([\u0600-\u06FF]+)\s*-\s*(\d+)/)
+  if (m) return { twoDigit: m[1], threeDigit: m[2], letter: m[3], iran: m[4], text: `${m[1]} ${m[3]} ${m[2]} ${m[4]}` }
+
+  // قالب جایگزین: «45 ع 923 17»  (از نسخه‌ی فاصله‌دار می‌خوانیم)
+  const letter = (spaced.match(/[\u0600-\u06FF]+/) || [''])[0]
+  const nums = spaced.match(/\d+/g) || []
+  if (nums.length >= 3) {
+    return {
+      twoDigit: nums[0], threeDigit: nums[1], letter, iran: nums[2],
+      text: [nums[0], letter, nums[1], nums[2]].filter(Boolean).join(' '),
+    }
+  }
+  return { twoDigit: '', threeDigit: '', letter: '', iran: '', text: String(raw || '').trim() }
+}
+
+/** «آدرس-شهر-استان» → { province, city, address } */
+function parseHistoryLocation(title) {
+  const t = String(title || '').replace(/\s+/g, ' ').trim()
+  if (!t) return { province: '', city: '', address: '' }
+
+  const parts = t.split('-').map((x) => x.trim()).filter(Boolean)
+  if (parts.length >= 3) {
+    const province = parts[parts.length - 1]
+    const city = parts[parts.length - 2]
+    let address = parts.slice(0, parts.length - 2).join('-').trim()
+
+    // پیشوند «استان، شهر، » را از ابتدای آدرس بردار
+    const lead = address.split('،').map((x) => x.trim())
+    while (lead.length > 1 && (lead[0] === province || lead[0] === city)) lead.shift()
+    address = lead.join('، ')
+
+    return {
+      province: province === 'نامشخص' ? '' : province,
+      city: city === 'نامشخص' ? '' : city,
+      address,
+    }
+  }
+  return splitLocation(t)
+}
+
+/**
+ * همه‌ی سطرهای جدول تاریخچه را می‌خواند.
+ * خروجی: آرایه‌ای از بارنامه‌ها، جدیدترین اول.
+ */
+async function scrapeHistoryTable(page) {
+  return page.evaluate(() => {
+    const clean = (t) => String(t || '').replace(/[\u200c\s]+/g, ' ').trim()
+    const rows = []
+
+    const tbl = document.querySelector('#myTable tbody') || document.querySelector('table.dataTable tbody')
+    if (!tbl) return rows
+
+    for (const tr of tbl.querySelectorAll('tr')) {
+      const td = Array.from(tr.querySelectorAll('td'))
+      if (td.length < 12) continue
+
+      // آدرس کامل در title است، متن سلول کوتاه‌شده («کرمان، سیرج...»)
+      const titleOf = (cell) => {
+        const el = cell.querySelector('[title]')
+        return el ? String(el.getAttribute('title') || '').trim() : clean(cell.textContent)
+      }
+
+      rows.push({
+        index: clean(td[0].textContent),
+        date: clean(td[1].textContent),
+        time: clean(td[2].textContent),
+        sender: clean(td[3].textContent),
+        receiver: clean(td[4].textContent),
+        driver: clean(td[5].textContent),
+        plateRaw: clean(td[6].textContent),
+        cargoValue: clean(td[7].textContent),
+        insurance: clean(td[8].textContent),
+        originTitle: titleOf(td[9]),
+        destTitle: titleOf(td[10]),
+        trackingCode: clean(td[11].textContent),
+      })
+    }
+    return rows
+  }).catch(() => [])
+}
+
+/**
+ * صفحه‌ی جزئیات را می‌خواند و همه‌ی فیلدها را برمی‌گرداند.
+ */
+async function scrapeBarnameDetail(page) {
+  return page.evaluate(() => {
+    const val = (id) => {
+      const el = document.getElementById(id)
+      return el ? String(el.value ?? el.textContent ?? '').trim() : ''
+    }
+    const sel = (id) => {
+      const el = document.getElementById(id)
+      if (!el) return { value: '', text: '' }
+      const o = el.options ? el.options[el.selectedIndex] : null
+      return { value: String(el.value || ''), text: o ? (o.label || o.textContent || '').trim() : '' }
+    }
+
+    // ── کالاها ──
+    const cargo = []
+    document.querySelectorAll('tr.proTr').forEach((tr) => {
+      const c = Array.from(tr.querySelectorAll('td, th')).map((x) => (x.textContent || '').trim())
+      if (c.length >= 4 && c[0]) {
+        cargo.push({ name: c[0], packaging: c[1], count: c[2], weightTon: c[3] })
+      }
+    })
+
+    // ── پلاک ──
+    const isFreeZone = String(val('HasFreeZoneCarTag')).toLowerCase() === 'true'
+    const letter = sel('Part3')
+
+    return {
+      trackingCode: val('trackingCode'),
+      sender: val('sender'),
+      receiver: val('receiver'),
+      driverName: val('driverName'),
+      // نام کاربر از نوار بالا — منبع دوم و مطمئن‌تر
+      headerUserName: (() => {
+        const clean = (t) => String(t || '').replace(/[\u200c\s]+/g, ' ').trim()
+        for (const el of document.querySelectorAll('span.user-name, small.user-name')) {
+          const t = clean(el.textContent)
+          if (!t || t.length < 3) continue
+          if (/خوش آمدید|نام کاربر|خروج|ورود/.test(t)) continue
+          return t
+        }
+        return ''
+      })(),
+      driverNationalCode: val('nationalCode'),
+      date: val('dates'),
+
+      plate: {
+        freeZone: isFreeZone,
+        // پلاک عادی
+        twoDigit: val('Part1'),
+        threeDigit: val('Part4'),
+        letterValue: letter.value,
+        letterText: letter.text,
+        iran: val('Part2'),
+        // پلاک منطقه آزاد
+        fzTwoDigit: val('twodight'),
+        fzNumber: val('FreeCartag'),
+        fzZone: sel('FreeZoneId').text,
+      },
+
+      announceCost: val('announceCost'),
+      insuranceCost: val('insuranceCost'),
+      origin: val('origin'),
+      destination: val('destination'),
+
+      selfDeclaredStart: val('SelfDeclaredTimeOfStartShipment'),
+      estimatedEnd: val('EstimatedTimeOfEndShipment'),
+      shippingStart: val('ShippingStartDate'),
+      shippingFinish: val('ShippingFinishDate'),
+
+      cargo,
+    }
+  }).catch(() => null)
+}
+
+/**
+ * ورود → تاریخچه → جزئیات → استخراج.
+ *
+ * opts = { credentials:{username,password}, headless, onLog }
+ * خروجی: { success, data, error, raw }
+ */
+async function importLastBarname(opts) {
+  const { credentials, headless = false, onLog = null } = opts
+  if (onLog) setLogSink(onLog)
+  if (!fs.existsSync(OUT)) fs.mkdirSync(OUT, { recursive: true })
+
+  const { chromium } = require('playwright')
+  const LAUNCH = {
+    headless,
+    channel: 'chrome',
+    args: ['--start-maximized', '--no-sandbox', '--disable-blink-features=AutomationControlled'],
+  }
+  const browser = await chromium.launch(LAUNCH)
+  const ctx = await browser.newContext({ viewport: null, locale: 'fa-IR', timezoneId: 'Asia/Tehran' })
+  const page = await ctx.newPage()
+
+  const done = async (r) => { await browser.close().catch(() => {}); return r }
+
+  try {
+    console.log(`حساب: ${credentials.username}`)
+    console.log('\n→ ورود به سامانه...')
+
+    const nav = await gotoR(page, LOGIN_URL, 'صفحه ورود')
+    if (nav === 'BLOCKED') {
+      return done({ success: false, error: 'IP بلاک شد — چند دقیقه بعد دوباره تلاش کنید', kind: 'block' })
+    }
+    if (nav === 'TIMEOUT' || !nav) {
+      return done({ success: false, error: 'اتصال به سایت برقرار نشد', kind: 'block' })
+    }
+    await settlePage(page, 'صفحه‌ی ورود')
+
+    if (await isServerBusy(page)) {
+      const m = await readBusyMessage(page)
+      return done({ success: false, error: 'سرور مشغول است: ' + m, kind: 'busy' })
+    }
+
+    await humanType(page, '#NationalCode', credentials.username)
+    await shortPause()
+    await humanType(page, '#user-password', credentials.password)
+    await shortPause()
+
+    // ── حل کپچا و ورود ──
+    let logged = false
+    let lastErr = 'ورود ناموفق'
+    let credKind = null
+
+    for (let att = 1; att <= 6; att++) {
+      const t = await classifyTemplate(page)
+      if (t.error) {
+        console.log(`   ✖ کپچا: ${t.error} → رفرش`)
+        await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
+        await settlePage(page)
+        await humanType(page, '#NationalCode', credentials.username)
+        await shortPause()
+        await humanType(page, '#user-password', credentials.password)
+        continue
+      }
+      const ans = solveMath(t.expr)
+      const minS = Math.min(...t.symbols.map((x) => x.score))
+      console.log(`   ◈ کپچا: ${t.expr} ⇒ ${ans} (${(minS * 100).toFixed(0)}%)`)
+      if (ans === null || minS < 0.42) {
+        await humanClick(page, '#dntCaptchaRefreshButton')
+        await humanPause(1800, 3200)
+        continue
+      }
+      await humanType(page, '#DNTCaptchaInputText', ans)
+      await mediumPause()
+      await humanClick(page, '#inter')
+
+      const res = await waitLoginResult(page, 45000)
+      if (res.ok) { logged = true; console.log(`   ✅ ورود موفق (${res.waited}s)`); break }
+      lastErr = res.error || lastErr
+      if (res.credentialKind) { credKind = res.credentialKind; console.log(`   🛑 ${res.error}`); break }
+      console.log(`   ✖ ورود نشد — ${String(res.error || '').slice(0, 80)}`)
+      await humanPause(2000, 4000)
+      await humanClick(page, '#dntCaptchaRefreshButton')
+      await humanType(page, '#NationalCode', credentials.username)
+      await shortPause()
+      await humanType(page, '#user-password', credentials.password)
+    }
+
+    if (!logged) return done({ success: false, error: lastErr, kind: credKind || 'error' })
+
+    /* نام دارنده‌ی حساب را همین‌جا از نوار بالا بردار —
+       قبل از رفتن به تاریخچه، تا حتی اگر تاریخچه خالی بود هم داشته باشیمش. */
+    await settlePage(page, 'صفحه‌ی اصلی')
+    const headerName = await readLoggedInUserName(page)
+    if (headerName) console.log(`   نام دارنده‌ی حساب: ${headerName}`)
+    await mediumPause()
+
+    // ── صفحه‌ی تاریخچه ──
+    console.log('\n→ باز کردن تاریخچه‌ی بارنامه‌ها...')
+    await longPause()   // انسان بلافاصله صفحه عوض نمی‌کند
+    const navHist = await gotoR(page, HISTORY_URL, 'تاریخچه')
+    if (navHist === 'BLOCKED') {
+      return done({ success: false, error: 'IP بلاک شد هنگام باز کردن تاریخچه', kind: 'block' })
+    }
+    if (!navHist) {
+      return done({ success: false, error: 'صفحه‌ی تاریخچه باز نشد', kind: 'block' })
+    }
+    await settlePage(page, 'صفحه‌ی تاریخچه')
+
+    // دکمه‌ی «جزئیات» — ممکن است با AJAX دیر بیاید
+    let hasBtn = false
+    for (let i = 0; i < 30; i++) {
+      hasBtn = await page.evaluate(() =>
+        !!document.querySelector('#btnDetailfirst, button[name="btnDetailfirst"]')).catch(() => false)
+      if (hasBtn) break
+      await page.waitForTimeout(500)
+    }
+
+    if (!hasBtn) {
+      const sw = await readSwalError(page)
+      await page.screenshot({ path: path.join(OUT, 'import-nohistory.png'), fullPage: true }).catch(() => {})
+      return done({
+        success: false,
+        error: sw || 'هیچ بارنامه‌ای در تاریخچه‌ی این حساب پیدا نشد — ابتدا یک بارنامه دستی ثبت کنید',
+        kind: 'no_history',
+        // حتی بدون بارنامه، لااقل نام دارنده‌ی حساب را می‌دانیم
+        accountHolderName: headerName || '',
+      })
+    }
+
+    /* ── اول خود جدول تاریخچه را بخوان ──
+       جدول تقریبا همه‌چیز را دارد و مهم‌تر از همه، آدرس کامل مبدا و
+       مقصد در ویژگی title سلول‌هاست — جایی که استان و شهر هم جدا آمده‌اند:
+           «کرمان، سیرجان، خیابان ابن سینا-سیرجان-کرمان»
+       صفحه‌ی جزئیات فقط متن فشرده دارد، پس جدول دقیق‌تر است. */
+    await mediumPause()   // فرصت به DataTables برای رندر کامل
+    const historyRows = await scrapeHistoryTable(page)
+    if (historyRows.length) {
+      console.log(`   ✔ ${historyRows.length} بارنامه در جدول تاریخچه`)
+      const h0 = historyRows[0]
+      console.log(`      جدیدترین: ${h0.date} ${h0.time} | کد ${h0.trackingCode} | پلاک ${h0.plateRaw}`)
+    } else {
+      console.log('   ⚠ جدول تاریخچه خوانده نشد — از صفحه‌ی جزئیات استفاده می‌شود')
+    }
+
+    console.log('   ✔ دکمه «جزئیات» پیدا شد')
+    await mediumPause()
+    console.log('   → کلیک روی جزئیات...')
+    if (!await humanClick(page, '#btnDetailfirst')) {
+      await page.evaluate(() => {
+        const b = document.querySelector('#btnDetailfirst, button[name="btnDetailfirst"]')
+        if (b) b.click()
+      }).catch(() => {})
+    }
+
+    // منتظر صفحه‌ی جزئیات
+    let onDetail = false
+    for (let i = 0; i < 40; i++) {
+      onDetail = await page.evaluate(() =>
+        /RealBarnameDetail/i.test(location.href) || !!document.getElementById('trackingCode'),
+      ).catch(() => false)
+      if (onDetail) break
+      await page.waitForTimeout(500)
+    }
+
+    if (!onDetail) {
+      await page.screenshot({ path: path.join(OUT, 'import-nodetail.png'), fullPage: true }).catch(() => {})
+      return done({ success: false, error: 'صفحه‌ی جزئیات بارنامه باز نشد', kind: 'error' })
+    }
+
+    await settlePage(page, 'صفحه‌ی جزئیات')
+    console.log(`   ✔ صفحه‌ی جزئیات باز شد: ${page.url()}`)
+
+    await mediumPause()
+    const raw = await scrapeBarnameDetail(page)
+    if (!raw) return done({ success: false, error: 'خواندن اطلاعات بارنامه ناموفق بود', kind: 'error' })
+
+    await page.screenshot({ path: path.join(OUT, 'import-detail.png'), fullPage: true }).catch(() => {})
+    try {
+      fs.writeFileSync(path.join(OUT, 'import-detail.json'), JSON.stringify(raw, null, 2), 'utf-8')
+    } catch (e) { /* اختیاری */ }
+
+    // ── تبدیل به قالب پروفایل ──
+    /* جدول تاریخچه اولویت دارد چون آدرس کامل و تفکیک‌شدهی
+       استان/شهر را دارد؛ صفحه‌ی جزئیات فقط متن فشرده دارد. */
+    const hist = historyRows[0] || null
+    const o = hist && hist.originTitle ? parseHistoryLocation(hist.originTitle) : splitLocation(raw.origin)
+    const d = hist && hist.destTitle ? parseHistoryLocation(hist.destTitle) : splitLocation(raw.destination)
+    /* نام راننده: اول از نوار بالای سایت، بعد از فیلد #driverName.
+       نوار بالا مطمئن‌تر است چون همیشه و در هر صفحه‌ای حضور دارد. */
+    const driverSource = headerName || raw.headerUserName || raw.driverName
+    const drv = splitPersonName(driverSource || hist?.driver || '')
+    if (headerName && raw.driverName && fold_(headerName) !== fold_(raw.driverName)) {
+      console.log(`   ⚠ نام نوار بالا («${headerName}») با نام بارنامه («${raw.driverName}») یکی نیست`)
+      console.log('      از نام نوار بالا استفاده شد — در صورت نیاز در پروفایل اصلاحش کن')
+    }
+    const snd = splitPersonName(raw.sender || hist?.sender || '')
+    const rcv = splitPersonName(raw.receiver || hist?.receiver || '')
+    const c0 = raw.cargo[0] || {}
+
+    const letter = raw.plate.letterText || PLATE_LETTER_BY_VALUE[raw.plate.letterValue] || ''
+    const detailPlate = raw.plate.freeZone
+      ? `${toLatin(raw.plate.fzTwoDigit)} ${toLatin(raw.plate.fzNumber)} (${raw.plate.fzZone})`.trim()
+      : [toLatin(raw.plate.twoDigit), letter, toLatin(raw.plate.threeDigit), toLatin(raw.plate.iran)]
+          .filter(Boolean).join(' ')
+
+    // پلاک جدول به قالب «45|923-ع-17» است
+    const histPlate = hist ? parsePlateFromHistory(hist.plateRaw) : null
+    const plateText = (histPlate && histPlate.text) || detailPlate
+
+    const profile = {
+      name: `وارد‌شده از بارنامه ${raw.trackingCode || ''}`.trim(),
+
+      senderFirstName: snd.firstName,
+      senderLastName: snd.lastName,
+      receiverFirstName: rcv.firstName,
+      receiverLastName: rcv.lastName,
+
+      driverName: drv.full,
+      driverNationalId: onlyDigits(raw.driverNationalCode),
+
+      plateNumber: plateText,
+
+      cargoName: c0.name || '',
+      cargoPackaging: c0.packaging || '',
+      cargoQuantity: onlyDigits(c0.count),
+      cargoWeight: toLatin(c0.weightTon || '').replace(/[^\d.]/g, ''),
+      cargoValue: onlyDigits(hist?.cargoValue || raw.announceCost),
+      insuranceAmount: onlyDigits(hist?.insurance || raw.insuranceCost),
+
+      originProvince: o.province,
+      originCity: o.city,
+      originAddress: o.address,
+      destProvince: d.province,
+      destCity: d.city,
+      destAddress: d.address,
+
+      trackingCode: raw.trackingCode || hist?.trackingCode || '',
+      // همه‌ی بارنامه‌های تاریخچه — برای گزارش و انتخاب کاربر
+      historyCount: historyRows.length,
+      shippingStart: raw.shippingStart || raw.selfDeclaredStart || '',
+      shippingFinish: raw.shippingFinish || raw.estimatedEnd || '',
+    }
+
+    console.log('\n── اطلاعات استخراج‌شده ──')
+    console.log(`   کد رهگیری : ${raw.trackingCode || '—'}`)
+    console.log(`   فرستنده   : ${raw.sender || '—'}`)
+    console.log(`   گیرنده    : ${raw.receiver || '—'}`)
+    console.log(`   راننده    : ${drv.full || '—'} | ${profile.driverNationalId || '—'}`)
+    console.log(`   پلاک      : ${plateText || '—'}`)
+    console.log(`   کالا      : ${profile.cargoName || '—'} | ${profile.cargoPackaging || '—'} | ` +
+                `${profile.cargoQuantity || '—'} بسته | ${profile.cargoWeight || '—'} تن`)
+    console.log(`   ارزش      : ${profile.cargoValue || '—'}`)
+    console.log(`   مبدا      : ${raw.origin || '—'}`)
+    console.log(`   مقصد      : ${raw.destination || '—'}`)
+    console.log(`   کالاها    : ${raw.cargo.length} ردیف`)
+
+    return done({ success: true, data: profile, raw, history: historyRows })
+  } catch (e) {
+    const msg = String((e && e.message) || e).split('\n')[0].slice(0, 200)
+    console.log(`   ✖ خطای غیرمنتظره: ${msg}`)
+    return done({
+      success: false, error: msg,
+      kind: isNetBlockError(e) ? 'block' : (isPageDeadError(e) ? 'dead' : 'error'),
+    })
+  }
+}
+
 /* ═══════ تبدیل رکورد RegistrationProfile به داده‌ی موتور ═══════ */
 function parsePlateText(txt) {
   const s = toLatin(txt || '').replace(/ایران/g, ' ').replace(/[-_|]/g, ' ').trim()
@@ -2072,6 +3216,10 @@ function parsePlateText(txt) {
     iran:       nums[2] || '',
   }
 }
+
+/* نشانه‌ی «تشخیص خودکار استان» که پنل در notes پروفایل می‌گذارد.
+   این‌طور نیاز به تغییر دیتابیس (migration) نیست. */
+const AUTO_PROV_TAG = /\[auto-province\]/
 
 function profileToData(p) {
   const name = String(p.driverName || '').trim()
@@ -2114,14 +3262,19 @@ function profileToData(p) {
     origin: {
       province: p.originProvince || '',
       city: p.originCity || '',
+      locality: p.originLocality || p.originCity || '',
       address: p.originAddress || '',
       postalCode: p.originPostalCode || '',
+      // اگر کاربر تیک «تشخیص خودکار استان از پلاک» را زده باشد
+      autoProvince: AUTO_PROV_TAG.test(String(p.notes || '')),
     },
     destination: {
       province: p.destProvince || '',
       city: p.destCity || '',
+      locality: p.destLocality || p.destCity || '',
       address: p.destAddress || '',
       postalCode: p.destPostalCode || '',
+      autoProvince: p.autoProvinceFromPlate === true,
     },
     fare: {
       amount: toLatin(p.freightCost || ''),
@@ -2155,13 +3308,19 @@ function validateData(d) {
 }
 
 module.exports = {
-  runWaybill, runWaybillOnce, profileToData, validateData, parsePlateText, setLogSink,
+  runWaybill, runWaybillOnce, importLastBarname, scrapeBarnameDetail,
+  readLoggedInUserName, scrapeHistoryTable,
+  humanPause, humanType, humanClick, settlePage,
+  parsePlateFromHistory, parseHistoryLocation,
+  provinceFromPlate, select2Pick, IRAN_CODE_TO_PROVINCE,
+  splitLocation, splitPersonName, profileToData, validateData, parsePlateText, setLogSink,
   // برای استفاده‌ی مستقیم در ابزارهای تست
   gotoR, classifyTemplate, solveMath, waitLoginResult,
   fillPersonStep, fillDriverVehicleStep, fillCargoStep, fillLocationStep,
   passReviewStep, fillFareStep, finalConfirmStep,
   pageHealth, isWafChallenge, waitUntilSiteBack,
   isNetBlockError, isPageDeadError, isPermanentError,
+  classifyCredentialError,
   isServerBusy, readBusyMessage, readSwalError, waitForSwalError, sleepWithLog,
   STEP_SENDER, STEP_RECEIVER, STEP_ORIGIN, STEP_DEST,
   SITE, LOGIN_URL, TARGET_URL, OUT,

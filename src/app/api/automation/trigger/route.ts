@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { getAutomationEngine } from '@/automation/engine/AutomationEngine'
 import { Queue } from 'bullmq'
@@ -6,7 +7,10 @@ import { REDIS_CONFIG } from '@/lib/redis'
 
 const automationQueue = new Queue('barbarg-automation', { connection: REDIS_CONFIG })
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'view_waybill')
+  if (!guard.ok) return guard.response
+
   try {
     const jobStatusGroups = await prisma.job.groupBy({ by: ['status'], _count: { id: true } })
 
@@ -47,6 +51,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const guard = await requirePermission(request, 'create_waybill')
+  if (!guard.ok) return guard.response
+
   try {
     const body = await request.json()
     const engine = getAutomationEngine()

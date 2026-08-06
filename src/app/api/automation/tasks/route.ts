@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { Queue } from 'bullmq'
 import { REDIS_CONFIG } from '@/lib/redis'
@@ -49,6 +50,9 @@ async function reapZombieJobs(): Promise<number> {
 }
 
 export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'view_waybill')
+  if (!guard.ok) return guard.response
+
   try {
     const { searchParams } = new URL(request.url)
     const status = searchParams.get('status')
@@ -78,6 +82,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const guard = await requirePermission(request, 'create_waybill')
+  if (!guard.ok) return guard.response
+
   try {
     const body = await request.json()
     if (body.action === 'retry' && body.jobId) {

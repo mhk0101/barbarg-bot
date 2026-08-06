@@ -21,6 +21,7 @@ import {
   Plus, Pencil, Trash2, Search, Power, PowerOff,
   Settings, CheckCircle, XCircle, BarChart3, Loader2, ChevronLeft, ChevronRight,
   Send, User, Truck, Package, MapPin, CreditCard, Eye, ChevronDown,
+  Download, RefreshCw, AlertCircle,
 } from 'lucide-react'
 
 interface Profile {
@@ -121,6 +122,123 @@ const PROVINCE_LIST = [
   'کرمانشاه', 'کهگیلویه و بویر احمد', 'یزد',
 ]
 
+/* ═══════════ اعتبارسنجی فرم پروفایل ═══════════
+   یک منبع واحد: هم برای نمایش زنده زیر هر فیلد، هم برای
+   جلوگیری از ذخیره. قبلا فقط موقع ذخیره پیام داده می‌شد. */
+const FIELD_RULES: Array<{
+  key: string
+  label: string
+  step: number
+  check?: (v: string) => string | null
+}> = [
+  { key: 'name', label: 'نام پروفایل', step: 1 },
+  { key: 'senderFirstName', label: 'نام فرستنده', step: 1 },
+  { key: 'senderLastName', label: 'نام خانوادگی فرستنده', step: 1 },
+  {
+    key: 'senderMobile', label: 'موبایل فرستنده', step: 1,
+    check: (v) => (/^09\d{9}$/.test(v.replace(/\D/g, '')) ? null : 'شماره موبایل باید ۱۱ رقم و با ۰۹ شروع شود'),
+  },
+  {
+    key: 'senderNationalId', label: 'کد ملی فرستنده', step: 1,
+    check: (v) => (v.replace(/\D/g, '').length === 10 || v.replace(/\D/g, '').length === 11 ? null : 'کد ملی باید ۱۰ رقم باشد'),
+  },
+  { key: 'receiverFirstName', label: 'نام گیرنده', step: 2 },
+  { key: 'receiverLastName', label: 'نام خانوادگی گیرنده', step: 2 },
+  {
+    key: 'receiverMobile', label: 'موبایل گیرنده', step: 2,
+    check: (v) => (/^09\d{9}$/.test(v.replace(/\D/g, '')) ? null : 'شماره موبایل باید ۱۱ رقم و با ۰۹ شروع شود'),
+  },
+  {
+    key: 'receiverNationalId', label: 'کد ملی گیرنده', step: 2,
+    check: (v) => (v.replace(/\D/g, '').length === 10 || v.replace(/\D/g, '').length === 11 ? null : 'کد ملی باید ۱۰ رقم باشد'),
+  },
+  {
+    key: 'plateNumber', label: 'شماره پلاک', step: 3,
+    check: (v) => {
+      const t = v.replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0))
+      const nums = t.match(/\d+/g) || []
+      const letter = t.match(/[\u0600-\u06FF]/)
+      if (nums.length < 3 || !letter) return 'پلاک کامل نیست — مثال: ۴۵ ع ۹۲۳ ۱۷'
+      return null
+    },
+  },
+  { key: 'driverName', label: 'نام راننده', step: 3 },
+  {
+    key: 'driverNationalId', label: 'کد ملی راننده', step: 3,
+    check: (v) => (v.replace(/\D/g, '').length === 10 ? null : 'کد ملی راننده باید ۱۰ رقم باشد'),
+  },
+  { key: 'cargoName', label: 'نام کالا', step: 4 },
+  {
+    key: 'cargoWeight', label: 'وزن کالا', step: 4,
+    check: (v) => (Number(v.replace(/[^\d.]/g, '')) > 0 ? null : 'وزن باید عددی بزرگ‌تر از صفر باشد'),
+  },
+  {
+    key: 'cargoValue', label: 'ارزش کالا', step: 4,
+    check: (v) => (Number(v.replace(/\D/g, '')) > 0 ? null : 'ارزش کالا باید عددی بزرگ‌تر از صفر باشد'),
+  },
+  { key: 'originProvince', label: 'استان مبدا', step: 5 },
+  { key: 'originCity', label: 'شهر مبدا', step: 5 },
+  { key: 'originAddress', label: 'آدرس مبدا', step: 5 },
+  { key: 'destProvince', label: 'استان مقصد', step: 5 },
+  { key: 'destCity', label: 'شهر مقصد', step: 5 },
+  { key: 'destAddress', label: 'آدرس مقصد', step: 5 },
+  {
+    key: 'freightCost', label: 'مبلغ کرایه', step: 5,
+    check: (v) => (Number(v.replace(/\D/g, '')) > 0 ? null : 'مبلغ کرایه باید عددی بزرگ‌تر از صفر باشد'),
+  },
+]
+
+/** خطای هر فیلد را برمی‌گرداند (خالی بودن یا نامعتبر بودن) */
+function validateForm(form: Record<string, unknown>, autoProvince = false): Record<string, string> {
+  const errs: Record<string, string> = {}
+  for (const r of FIELD_RULES) {
+    /* اگر استان از پلاک تشخیص داده می‌شود، پر کردنش اجباری نیست */
+    if (autoProvince && (r.key === 'originProvince' || r.key === 'destProvince')) continue
+    const v = String(form[r.key] ?? '').trim()
+    if (!v) { errs[r.key] = 'این فیلد الزامی است'; continue }
+    if (r.check) {
+      const m = r.check(v)
+      if (m) errs[r.key] = m
+    }
+  }
+  return errs
+}
+
+/* نگاشت کد ایران پلاک به استان — باید با step1-engine.js یکی باشد */
+const IRAN_CODE_TO_PROVINCE: Record<string, string> = {
+  '10': 'خوزستان', '11': 'مرکزی', '12': 'خراسان رضوی', '13': 'اصفهان',
+  '14': 'خوزستان', '15': 'آذربایجان شرقی', '16': 'گیلان', '17': 'کرمان',
+  '18': 'خوزستان', '19': 'فارس', '20': 'خراسان رضوی', '21': 'تهران',
+  '22': 'تهران', '23': 'مرکزی', '24': 'همدان', '25': 'اصفهان',
+  '26': 'قم', '27': 'خراسان رضوی', '28': 'گیلان', '29': 'تهران',
+  '30': 'خوزستان', '31': 'البرز', '32': 'آذربایجان شرقی', '33': 'تهران',
+  '34': 'قزوین', '35': 'سمنان', '36': 'کرمانشاه', '37': 'اردبیل',
+  '38': 'چهارمحال و بختیاری', '39': 'تهران', '40': 'خراسان رضوی',
+  '41': 'گیلان', '42': 'لرستان', '43': 'گیلان', '44': 'مازندران',
+  '45': 'زنجان', '46': 'مازندران', '47': 'مازندران', '48': 'گلستان',
+  '49': 'سیستان و بلوچستان', '51': 'خراسان رضوی', '52': 'همدان',
+  '53': 'آذربایجان شرقی', '54': 'خراسان شمالی', '55': 'مرکزی',
+  '56': 'سیستان و بلوچستان', '57': 'سیستان و بلوچستان', '58': 'آذربایجان غربی',
+  '59': 'خوزستان', '61': 'خوزستان', '62': 'مرکزی', '63': 'خوزستان',
+  '64': 'لرستان', '65': 'آذربایجان غربی', '66': 'کردستان', '67': 'کرمانشاه',
+  '68': 'ایلام', '69': 'مازندران', '71': 'فارس', '72': 'فارس',
+  '73': 'کهگیلویه و بویر احمد', '74': 'فارس', '75': 'بوشهر',
+  '76': 'کرمان', '77': 'هرمزگان', '78': 'کرمان', '79': 'یزد',
+  '81': 'اصفهان', '82': 'اصفهان', '83': 'اصفهان', '84': 'اصفهان',
+  '85': 'اصفهان', '86': 'اصفهان', '87': 'یزد', '88': 'چهارمحال و بختیاری',
+  '89': 'یزد', '91': 'خراسان رضوی', '92': 'خراسان رضوی', '93': 'خراسان رضوی',
+  '94': 'خراسان جنوبی', '95': 'خراسان رضوی', '96': 'خراسان شمالی',
+  '97': 'خراسان رضوی', '98': 'سیستان و بلوچستان', '99': 'خراسان رضوی',
+}
+
+/** استان را از کد ایران پلاک حدس می‌زند (رقم آخر) */
+function provinceFromPlateUI(plate: string): string | null {
+  const t = String(plate || '').replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0))
+  const nums = t.match(/\d+/g) || []
+  const iran = nums[2] || ''
+  return IRAN_CODE_TO_PROVINCE[iran] || null
+}
+
 const PACKAGING_TYPES = [
   'کارتن', 'جعبه', 'کیسه', 'گونی', 'جامبو', 'بشکه', 'رول', 'فله', 'عدل', 'شاخه', 'سایر',
 ]
@@ -139,6 +257,28 @@ export default function ProfilesPage() {
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [step, setStep] = useState(0)
+  const [importing, setImporting] = useState(false)
+  const [importedFrom, setImportedFrom] = useState<string | null>(null)
+  const [autoImport, setAutoImport] = useState(true)   // پیش‌فرض: خودکار
+
+  /* اعتبارسنجی زنده.
+     touched = فیلدهایی که کاربر دست زده یا تلاش کرده ذخیره کند.
+     بدون این، فرم خالی از همان اول قرمز می‌شد و آزاردهنده بود. */
+  /* تشخیص خودکار استان از پلاک — پیش‌فرض روشن */
+  const [autoProvince, setAutoProvince] = useState(true)
+  const [touched, setTouched] = useState<Record<string, boolean>>({})
+  const [showAllErrors, setShowAllErrors] = useState(false)
+
+  const errors = validateForm(form as Record<string, unknown>, autoProvince)
+  const errorCount = Object.keys(errors).length
+
+  /** خطای یک فیلد — فقط اگر کاربر دست زده یا دکمه‌ی ذخیره را زده */
+  const errOf = (key: string) =>
+    (touched[key] || showAllErrors) ? errors[key] : undefined
+
+  /** تعداد خطای هر مرحله — برای نشان قرمز روی تب */
+  const stepErrorCount = (stepIndex: number) =>
+    FIELD_RULES.filter((r) => r.step - 1 === stepIndex && errors[r.key]).length
   const limit = 20
 
   const fetchProfiles = useCallback(async () => {
@@ -176,15 +316,116 @@ export default function ProfilesPage() {
   useEffect(() => { fetchStats() }, [fetchStats])
   useEffect(() => { fetchAccounts() }, [fetchAccounts])
 
+  /**
+   * خواندن مشخصات از آخرین بارنامه‌ی ثبت‌شدهی حساب و پر کردن فرم.
+   *
+   * فقط فیلدهایی که سایت می‌دهد پر می‌شوند؛ بقیه دست‌نخورده
+   * می‌مانند تا کاربر خودش پر کند. هر فیلدی قابل ویرایش است.
+   */
+  const importFromSite = useCallback(async (accountId: string, silent = false) => {
+    if (!accountId) {
+      if (!silent) toast.error('اول یک حساب کاربری انتخاب کنید')
+      return
+    }
+    if (importing) return
+    setImporting(true)
+    const tid = toast.loading('در حال خواندن آخرین بارنامه از سامانه…', {
+      description: 'عمدا آرام انجام می‌شود تا سایت IP را بلاک نکند — ۲ تا ۳ دقیقه',
+    })
+    try {
+      const res = await fetch('/api/barbarg-accounts/import-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId, createProfile: false }),
+      })
+      const d = await res.json()
+
+      if (!res.ok || d.error) {
+        toast.error(d.error || 'خواندن اطلاعات ناموفق بود', {
+          id: tid, duration: 8000,
+          description: 'می‌توانید فیلدها را دستی پر کنید',
+        })
+        return
+      }
+
+      const x = d.data || {}
+      // فقط مقادیر غیرخالی را بریز روی فرم
+      setForm((prev) => {
+        const next: Record<string, unknown> = { ...prev }
+        const put = (k: string, v: unknown) => {
+          if (v !== undefined && v !== null && String(v).trim() !== '') next[k] = v
+        }
+        put('senderFirstName', x.senderFirstName)
+        put('senderLastName', x.senderLastName)
+        put('receiverFirstName', x.receiverFirstName)
+        put('receiverLastName', x.receiverLastName)
+        put('driverName', x.driverName)
+        put('driverNationalId', x.driverNationalId)
+        put('senderNationalId', x.senderNationalId)
+        put('receiverNationalId', x.receiverNationalId)
+        put('plateNumber', x.plateNumber)
+        put('cargoName', x.cargoName)
+        put('cargoPackaging', x.cargoPackaging)
+        put('cargoQuantity', x.cargoQuantity)
+        put('cargoWeight', x.cargoWeight)
+        put('cargoValue', x.cargoValue)
+        put('insuranceAmount', x.insuranceAmount)
+        put('originProvince', x.originProvince)
+        put('originCity', x.originCity)
+        put('originAddress', x.originAddress)
+        put('destProvince', x.destProvince)
+        put('destCity', x.destCity)
+        put('destAddress', x.destAddress)
+        /* نام پروفایل = نام راننده (اگر نبود، پلاک). قابل ویرایش است. */
+        if (!String(prev.name || '').trim()) {
+          if (x.driverName) next.name = x.driverName
+          else if (x.plateNumber) next.name = `پروفایل ${x.plateNumber}`
+        }
+        /* کد ملی فرستنده/گیرنده: اگر سایت نداد، از کد ملی حساب باربگ */
+        {
+          const acc2 = accounts.find((a) => a.id === prev.accountId)
+          const nid2 = String(acc2?.username || '').replace(/\D/g, '')
+          if (nid2) {
+            if (!String(next.driverNationalId || '').trim()) next.driverNationalId = nid2
+            if (!String(next.senderNationalId || '').trim()) next.senderNationalId = nid2
+            if (!String(next.receiverNationalId || '').trim()) next.receiverNationalId = nid2
+          }
+        }
+        return next as typeof prev
+      })
+
+      setImportedFrom(x.trackingCode || null)
+      toast.success('اطلاعات از سامانه خوانده شد', {
+        id: tid, duration: 9000,
+        description:
+          `پلاک ${x.plateNumber || '—'} | راننده ${x.driverName || '—'} | ` +
+          `${x.originCity || '—'} ← ${x.destCity || '—'}، ` +
+          'موبایل و کد ملی فرستنده/گیرنده و کرایه را خودتان پر کنید.',
+      })
+    } catch {
+      toast.error('خطا در ارتباط با سرور', { id: tid })
+    } finally {
+      setImporting(false)
+    }
+  }, [importing])
+
   const openCreate = () => {
     setEditProfile(null)
     setForm({ ...emptyForm })
     setStep(0)
+    setImportedFrom(null)
+    setAutoImport(true)      // پیش‌فرض همیشه خودکار
+    setAutoProvince(true)
+    setTouched({})
+    setShowAllErrors(false)
     setDialogOpen(true)
   }
 
   const openEdit = (p: Profile) => {
     setEditProfile(p)
+    setAutoProvince(String((p as { notes?: string }).notes || '').includes('[auto-province]'))
+    setTouched({})
+    setShowAllErrors(false)
     setForm({
       name: p.name, senderType: p.senderType || '',
       senderFirstName: p.senderFirstName, senderLastName: p.senderLastName,
@@ -227,6 +468,22 @@ export default function ProfilesPage() {
   }
 
   const handleSave = async () => {
+    /* اعتبارسنجی کامل — همه‌ی خطاها روی فیلدها نمایان می‌شوند */
+    setShowAllErrors(true)
+    const errs = validateForm(form as Record<string, unknown>, autoProvince)
+    const keys = Object.keys(errs)
+    if (keys.length > 0) {
+      const first = FIELD_RULES.find((r) => errs[r.key])
+      if (first) setStep(first.step - 1)
+      toast.error(
+        keys.length === 1
+          ? `«${first?.label}» مشکل دارد: ${errs[first!.key]}`
+          : `${keys.length} فیلد مشکل دارند — فیلدهای قرمز را ببینید`,
+        { description: first ? `اولی: «${first.label}» در مرحله ${first.step}` : undefined },
+      )
+      return
+    }
+
     const required: Array<[string, string, number]> = [
       ['name', 'نام پروفایل', 1],
       ['senderFirstName', 'نام فرستنده', 1],
@@ -259,7 +516,15 @@ export default function ProfilesPage() {
     }
     setSaving(true)
     try {
-      const body = { ...form, accountId: form.accountId || null }
+      /* انتخاب «تشخیص خودکار استان» در notes ذخیره می‌شود
+         تا نیاز به تغییر دیتابیس (migration) نباشد. */
+      const TAG = '[auto-province]'
+      const cleanNotes = String(form.notes || '').replace(TAG, '').trim()
+      const body = {
+        ...form,
+        accountId: form.accountId || null,
+        notes: autoProvince ? `${TAG} ${cleanNotes}`.trim() : cleanNotes,
+      }
       if (editProfile) {
         const res = await fetch(`/api/registration-profiles/${editProfile.id}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -296,6 +561,8 @@ export default function ProfilesPage() {
 
   const updateField = (key: string, value: string | number) => {
     setForm((prev) => ({ ...prev, [key]: value }))
+    // به محض دست زدن، خطای همین فیلد قابل نمایش می‌شود
+    setTouched((t) => (t[key] ? t : { ...t, [key]: true }))
   }
 
   const statCards = [
@@ -419,6 +686,51 @@ export default function ProfilesPage() {
             <DialogTitle className="text-lg">{editProfile ? 'ویرایش پروفایل' : 'افزودن پروفایل جدید'}</DialogTitle>
           </DialogHeader>
 
+          {/* ── نوار واردات خودکار ──
+              پیش‌فرض روشن است: به محض انتخاب حساب، فرم از سایت پر می‌شود.
+              کاربر می‌تواند خاموشش کند و همه‌چیز را دستی بنویسد،
+              یا هر فیلدی را بعد از واردات تغییر دهد. */}
+          {!editProfile && (
+            <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-sm">
+                  <Download className="size-4 text-emerald-500" />
+                  <span className="font-medium">خواندن خودکار از سامانه</span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <label className="flex cursor-pointer items-center gap-1.5 text-xs">
+                    <input
+                      type="checkbox"
+                      className="size-3.5 accent-emerald-500"
+                      checked={autoImport}
+                      onChange={(e) => setAutoImport(e.target.checked)}
+                    />
+                    <span>{autoImport ? 'حالت خودکار' : 'حالت دستی'}</span>
+                  </label>
+
+                  <Button
+                    size="sm" variant="outline" className="h-7 text-xs"
+                    disabled={importing || !form.accountId}
+                    onClick={() => importFromSite(form.accountId as string)}
+                  >
+                    {importing
+                      ? <><Loader2 className="size-3 ml-1 animate-spin" />در حال خواندن…</>
+                      : <><RefreshCw className="size-3 ml-1" />خواندن از سایت</>}
+                  </Button>
+                </div>
+              </div>
+
+              <p className="text-[11px] leading-5 text-muted-foreground">
+                {importedFrom
+                  ? `✔ اطلاعات از بارنامه‌ی ${importedFrom} خوانده شد. هر فیلدی را می‌توانید دستی تغییر دهید.`
+                  : autoImport
+                    ? 'در گام ۳ که حساب کاربری را انتخاب کنید، مشخصات از آخرین بارنامه‌ی همان حساب خودکار پر می‌شود.'
+                    : 'حالت دستی: هیچ چیزی خودکار پر نمی‌شود. هر وقت خواستید دکمه‌ی «خواندن از سایت» را بزنید.'}
+              </p>
+            </div>
+          )}
+
           <div className="flex items-center gap-1 overflow-x-auto pb-2 border-b">
             {STEPS.map((s, i) => (
               <button
@@ -434,6 +746,14 @@ export default function ProfilesPage() {
               >
                 <s.icon className="size-3.5" />
                 <span>{i + 1}. {s.label}</span>
+                {/* نشان تعداد خطای هر مرحله — تا کاربر بداند کجا را درست کند */}
+                {(showAllErrors || Object.keys(touched).length > 0) && stepErrorCount(i) > 0 && (
+                  <span className={`ml-0.5 flex size-4 items-center justify-center rounded-full text-[9px] font-bold ${
+                    step === i ? 'bg-primary-foreground text-primary' : 'bg-destructive text-white'
+                  }`}>
+                    {stepErrorCount(i)}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -443,14 +763,14 @@ export default function ProfilesPage() {
               <div className="space-y-4">
                 <SectionTitle title="مرحله ۱: مشخصات فرستنده" />
                 <div className="grid grid-cols-1 gap-4">
-                  <Field label="نام پروفایل *" value={form.name as string} onChange={(v) => updateField('name', v)} placeholder="مثلا: پلاک 45ع923 - سیرجان" />
+                  <Field label="نام پروفایل *" value={form.name as string} onChange={(v) => updateField('name', v)} placeholder="مثلا: پلاک 45ع923 - سیرجان" error={errOf('name')} />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <FieldSelect label="نوع فرستنده *" value={form.senderType as string} onChange={(v) => updateField('senderType', v)} options={SENDER_TYPES} placeholder="انتخاب کنید" />
-                  <Field label="کدملی *" value={form.senderNationalId as string} onChange={(v) => updateField('senderNationalId', v)} placeholder="کدملی" />
-                  <Field label="شماره موبایل *" value={form.senderMobile as string} onChange={(v) => updateField('senderMobile', v)} placeholder="۰۹۱۲۱۲۳۴۵۶۷" />
-                  <Field label="نام *" value={form.senderFirstName as string} onChange={(v) => updateField('senderFirstName', v)} placeholder="نام" />
-                  <Field label="نام خانوادگی *" value={form.senderLastName as string} onChange={(v) => updateField('senderLastName', v)} placeholder="نام خانوادگی" />
+                  <Field label="کدملی *" value={form.senderNationalId as string} onChange={(v) => updateField('senderNationalId', v)} placeholder="کدملی" error={errOf('senderNationalId')} />
+                  <Field label="شماره موبایل *" value={form.senderMobile as string} onChange={(v) => updateField('senderMobile', v)} placeholder="۰۹۱۲۱۲۳۴۵۶۷" error={errOf('senderMobile')} />
+                  <Field label="نام *" value={form.senderFirstName as string} onChange={(v) => updateField('senderFirstName', v)} placeholder="نام" error={errOf('senderFirstName')} />
+                  <Field label="نام خانوادگی *" value={form.senderLastName as string} onChange={(v) => updateField('senderLastName', v)} placeholder="نام خانوادگی" error={errOf('senderLastName')} />
                   <Field label="شماره ثابت" value={form.senderPhone as string} onChange={(v) => updateField('senderPhone', v)} placeholder="۰۲۱۱۲۳۴۵۶۷۸" />
                   <Field label="کدپستی" value={form.senderPostalCode as string} onChange={(v) => updateField('senderPostalCode', v)} placeholder="کدپستی" />
                 </div>
@@ -462,10 +782,10 @@ export default function ProfilesPage() {
                 <SectionTitle title="مرحله ۲: مشخصات گیرنده" />
                 <div className="grid grid-cols-2 gap-4">
                   <FieldSelect label="نوع گیرنده *" value={form.receiverType as string} onChange={(v) => updateField('receiverType', v)} options={RECEIVER_TYPES} placeholder="انتخاب کنید" />
-                  <Field label="کدملی *" value={form.receiverNationalId as string} onChange={(v) => updateField('receiverNationalId', v)} placeholder="کدملی" />
-                  <Field label="شماره موبایل *" value={form.receiverMobile as string} onChange={(v) => updateField('receiverMobile', v)} placeholder="۰۹۱۲۱۲۳۴۵۶۷" />
-                  <Field label="نام *" value={form.receiverFirstName as string} onChange={(v) => updateField('receiverFirstName', v)} placeholder="نام" />
-                  <Field label="نام خانوادگی *" value={form.receiverLastName as string} onChange={(v) => updateField('receiverLastName', v)} placeholder="نام خانوادگی" />
+                  <Field label="کدملی *" value={form.receiverNationalId as string} onChange={(v) => updateField('receiverNationalId', v)} placeholder="کدملی" error={errOf('receiverNationalId')} />
+                  <Field label="شماره موبایل *" value={form.receiverMobile as string} onChange={(v) => updateField('receiverMobile', v)} placeholder="۰۹۱۲۱۲۳۴۵۶۷" error={errOf('receiverMobile')} />
+                  <Field label="نام *" value={form.receiverFirstName as string} onChange={(v) => updateField('receiverFirstName', v)} placeholder="نام" error={errOf('receiverFirstName')} />
+                  <Field label="نام خانوادگی *" value={form.receiverLastName as string} onChange={(v) => updateField('receiverLastName', v)} placeholder="نام خانوادگی" error={errOf('receiverLastName')} />
                   <Field label="شماره ثابت" value={form.receiverPhone as string} onChange={(v) => updateField('receiverPhone', v)} placeholder="۰۲۱۱۲۳۴۵۶۷۸" />
                   <Field label="کدپستی" value={form.receiverPostalCode as string} onChange={(v) => updateField('receiverPostalCode', v)} placeholder="کدپستی" />
                 </div>
@@ -479,7 +799,33 @@ export default function ProfilesPage() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                       <Label className="text-xs">حساب کاربری</Label>
-                      <Select value={(form.accountId as string) || 'none'} onValueChange={(v) => updateField('accountId', (v ?? '') === 'none' ? '' : (v ?? ''))}>
+                      <Select
+                        value={(form.accountId as string) || 'none'}
+                        onValueChange={(v) => {
+                          const id = (v ?? '') === 'none' ? '' : (v ?? '')
+                          updateField('accountId', id)
+
+                          /* نام کاربری حساب باربگ همان کد ملی صاحب حساب است —
+                             همان را در کد ملی راننده/فرستنده/گیرنده می‌گذاریم.
+                             فقط فیلدهای خالی پر می‌شوند و هر کدام قابل ویرایش است. */
+                          const acc = accounts.find((a) => a.id === id)
+                          const nid = String(acc?.username || '').replace(/\D/g, '')
+                          if (nid) {
+                            setForm((prev) => {
+                              const next = { ...prev }
+                              if (!String(prev.driverNationalId || '').trim()) next.driverNationalId = nid
+                              if (!String(prev.senderNationalId || '').trim()) next.senderNationalId = nid
+                              if (!String(prev.receiverNationalId || '').trim()) next.receiverNationalId = nid
+                              return next
+                            })
+                          }
+                          /* حالت خودکار (پیش‌فرض): به محض انتخاب حساب،
+                             اطلاعات از سایت خوانده می‌شود. فقط برای پروفایل جدید. */
+                          if (id && autoImport && !editProfile) {
+                            void importFromSite(id, true)
+                          }
+                        }}
+                      >
                         <SelectTrigger className="h-9"><SelectValue placeholder="انتخاب اکانت" /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="none">بدون اکانت</SelectItem>
@@ -489,7 +835,7 @@ export default function ProfilesPage() {
                         </SelectContent>
                       </Select>
                     </div>
-                    <PlateField value={form.plateNumber as string} onChange={(v) => updateField('plateNumber', v)} />
+                    <PlateField value={form.plateNumber as string} onChange={(v) => updateField('plateNumber', v)} error={errOf('plateNumber')} />
                     <Field label="شماره مسلسل" value={form.vehicleSerialNumber as string} onChange={(v) => updateField('vehicleSerialNumber', v)} />
                     <Field label="شماره موتور" value={form.vehicleMotorNumber as string} onChange={(v) => updateField('vehicleMotorNumber', v)} />
                     <FieldSelect label="برگه بیمه" value={form.vehicleInsurancePage as string} onChange={(v) => updateField('vehicleInsurancePage', v)} options={INSURANCE_OPTIONS} placeholder="انتخاب کنید" />
@@ -500,12 +846,12 @@ export default function ProfilesPage() {
                 <div className="space-y-4">
                   <SectionTitle title="مشخصات راننده" />
                   <div className="grid grid-cols-2 gap-4">
-                    <Field label="راننده *" value={form.driverName as string} onChange={(v) => updateField('driverName', v)} placeholder="نام و نام خانوادگی" />
+                    <Field label="راننده *" value={form.driverName as string} onChange={(v) => updateField('driverName', v)} placeholder="نام و نام خانوادگی" error={errOf('driverName')} />
                     <Field label="تلفن همراه" value={form.driverMobile as string} onChange={(v) => updateField('driverMobile', v)} placeholder="۰۹۱۲۱۲۳۴۵۶۷" />
                     <Field label="شماره گواهینامه" value={form.driverLicense as string} onChange={(v) => updateField('driverLicense', v)} />
                     <Field label="شماره کارت" value={form.driverCard as string} onChange={(v) => updateField('driverCard', v)} />
                     <Field label="شماره شناسنامه" value={form.driverIdNumber as string} onChange={(v) => updateField('driverIdNumber', v)} />
-                    <Field label="کد ملی راننده *" value={form.driverNationalId as string} onChange={(v) => updateField('driverNationalId', v)} placeholder="۱۰ رقمی" />
+                    <Field label="کد ملی راننده *" value={form.driverNationalId as string} onChange={(v) => updateField('driverNationalId', v)} placeholder="۱۰ رقمی" error={errOf('driverNationalId')} />
                     <FieldSelect label="جنسیت" value={form.driverGender as string} onChange={(v) => updateField('driverGender', v)} options={GENDER_OPTIONS} placeholder="انتخاب کنید" />
                   </div>
                 </div>
@@ -516,11 +862,11 @@ export default function ProfilesPage() {
               <div className="space-y-4">
                 <SectionTitle title="مرحله ۴: مشخصات بار" />
                 <div className="grid grid-cols-2 gap-4">
-                  <FieldSelect label="کالای قابل بارگیری *" value={form.cargoName as string} onChange={(v) => updateField('cargoName', v)} options={CARGO_TYPES} placeholder="انتخاب کنید" />
+                  <FieldSelect label="کالای قابل بارگیری *" value={form.cargoName as string} onChange={(v) => updateField('cargoName', v)} options={CARGO_TYPES} placeholder="انتخاب کنید" error={errOf('cargoName')} />
                   <FieldSelect label="نوع بسته‌بندی" value={form.cargoPackaging as string} onChange={(v) => updateField('cargoPackaging', v)} options={PACKAGING_TYPES} placeholder="انتخاب کنید" />
-                  <Field label="وزن بار (تن)" value={form.cargoWeight as string} onChange={(v) => updateField('cargoWeight', v)} placeholder="مثلا 19" />
+                  <Field label="وزن بار (تن)" value={form.cargoWeight as string} onChange={(v) => updateField('cargoWeight', v)} placeholder="مثلا 19" error={errOf('cargoWeight')} />
                   <Field label="تعداد بسته" value={form.cargoQuantity as string} onChange={(v) => updateField('cargoQuantity', v)} placeholder="مثلا 19" />
-                  <Field label="ارزش تقریبی بار (ریال) *" value={form.cargoValue as string} onChange={(v) => updateField('cargoValue', v)} placeholder="مثلا 10000000" />
+                  <Field label="ارزش تقریبی بار (ریال) *" value={form.cargoValue as string} onChange={(v) => updateField('cargoValue', v)} placeholder="مثلا 10000000" error={errOf('cargoValue')} />
                 </div>
               </div>
             )}
@@ -529,25 +875,68 @@ export default function ProfilesPage() {
               <div className="space-y-4">
                 <SectionTitle title="مرحله ۵: مبدا، مقصد و کرایه" />
 
+                {/* ── انتخاب روش تعیین استان ── */}
+                <div className="rounded-xl border border-blue-500/25 bg-blue-500/5 p-3 space-y-2">
+                  <label className="flex cursor-pointer items-start gap-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 size-4 accent-blue-500"
+                      checked={autoProvince}
+                      onChange={(e) => setAutoProvince(e.target.checked)}
+                    />
+                    <span className="text-sm">
+                      <b>تشخیص خودکار استان از روی پلاک</b>
+                      <span className="block text-[11px] leading-5 text-muted-foreground">
+                        {autoProvince
+                          ? (() => {
+                              const g = provinceFromPlateUI(form.plateNumber as string)
+                              return g
+                                ? `از پلاک «${form.plateNumber}» استان «${g}» تشخیص داده شد. فقط شهر/محله را پر کنید.`
+                                : 'پلاک را در مرحله ۳ کامل کنید تا استان تشخیص داده شود.'
+                            })()
+                          : 'خاموش است — استان را خودتان انتخاب کنید.'}
+                      </span>
+                    </span>
+                  </label>
+                </div>
+
                 <p className="text-sm font-semibold text-muted-foreground">مبدا بارگیری (گام ۵ سایت)</p>
                 <div className="grid grid-cols-2 gap-4">
-                  <FieldSelect label="استان مبدا *" value={form.originProvince as string} onChange={(v) => updateField('originProvince', v)} options={PROVINCE_LIST} placeholder="انتخاب کنید" />
-                  <Field label="شهر مبدا *" value={form.originCity as string} onChange={(v) => updateField('originCity', v)} placeholder="مثلا سیرجان" />
-                  <Field label="آدرس مبدا *" value={form.originAddress as string} onChange={(v) => updateField('originAddress', v)} placeholder="خیابان، کوچه، پلاک" />
+                  {autoProvince ? (
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground">استان مبدا (خودکار)</Label>
+                      <div className="flex h-9 items-center rounded-md border border-dashed border-blue-500/40 bg-blue-500/5 px-3 text-sm">
+                        {provinceFromPlateUI(form.plateNumber as string) || <span className="text-muted-foreground">از پلاک تشخیص داده می‌شود</span>}
+                      </div>
+                    </div>
+                  ) : (
+                    <FieldSelect label="استان مبدا *" value={form.originProvince as string} onChange={(v) => updateField('originProvince', v)} options={PROVINCE_LIST} placeholder="انتخاب کنید" error={errOf('originProvince')} />
+                  )}
+                  <Field label="شهر مبدا *" value={form.originCity as string} onChange={(v) => updateField('originCity', v)} placeholder="مثلا سیرجان" error={errOf('originCity')} />
+                  <Field label="آدرس مبدا *" value={form.originAddress as string} onChange={(v) => updateField('originAddress', v)} placeholder="خیابان، کوچه، پلاک" error={errOf('originAddress')} />
                   <Field label="کدپستی مبدا" value={form.originPostalCode as string} onChange={(v) => updateField('originPostalCode', v)} placeholder="اختیاری" />
                 </div>
 
                 <p className="text-sm font-semibold text-muted-foreground pt-2">مقصد تخلیه (گام ۶ سایت)</p>
                 <div className="grid grid-cols-2 gap-4">
-                  <FieldSelect label="استان مقصد *" value={form.destProvince as string} onChange={(v) => updateField('destProvince', v)} options={PROVINCE_LIST} placeholder="انتخاب کنید" />
-                  <Field label="شهر مقصد *" value={form.destCity as string} onChange={(v) => updateField('destCity', v)} placeholder="مثلا سیرجان" />
-                  <Field label="آدرس مقصد *" value={form.destAddress as string} onChange={(v) => updateField('destAddress', v)} placeholder="خیابان، کوچه، پلاک" />
+                  {autoProvince ? (
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground">استان مقصد (خودکار)</Label>
+                      <div className="flex h-9 items-center rounded-md border border-dashed border-blue-500/40 bg-blue-500/5 px-3 text-sm">
+                        {provinceFromPlateUI(form.plateNumber as string) || <span className="text-muted-foreground">از پلاک تشخیص داده می‌شود</span>}
+                      </div>
+                    </div>
+                  ) : (
+                    <FieldSelect label="استان مقصد *" value={form.destProvince as string} onChange={(v) => updateField('destProvince', v)} options={PROVINCE_LIST} placeholder="انتخاب کنید" error={errOf('destProvince')} />
+                  )}
+                  <Field label="شهر مقصد *" value={form.destCity as string} onChange={(v) => updateField('destCity', v)} placeholder="مثلا سیرجان" error={errOf('destCity')} />
+                  <Field label="آدرس مقصد *" value={form.destAddress as string} onChange={(v) => updateField('destAddress', v)} placeholder="خیابان، کوچه، پلاک" error={errOf('destAddress')} />
                   <Field label="کدپستی مقصد" value={form.destPostalCode as string} onChange={(v) => updateField('destPostalCode', v)} placeholder="اختیاری" />
                 </div>
 
                 <p className="text-sm font-semibold text-muted-foreground pt-2">کرایه (گام ۸ سایت)</p>
                 <div className="grid grid-cols-2 gap-4">
-                  <Field label="مبلغ کرایه (ریال) *" value={form.freightCost as string} onChange={(v) => updateField('freightCost', v)} placeholder="مثلا 5000000" />
+                  <Field label="مبلغ کرایه (ریال) *" value={form.freightCost as string} onChange={(v) => updateField('freightCost', v)} placeholder="مثلا 5000000" error={errOf('freightCost')} />
                   <Field label="پیش کرایه" value={form.advanceFare as string} onChange={(v) => updateField('advanceFare', v)} placeholder="مبلغ" />
                   <FieldSelect label="نوع کرایه" value={form.fareType as string} onChange={(v) => updateField('fareType', v)} options={FARE_TYPES} placeholder="انتخاب کنید" />
                   <Field label="بیمه باربری" value={form.transportInsurance as string} onChange={(v) => updateField('transportInsurance', v)} />
@@ -579,6 +968,14 @@ export default function ProfilesPage() {
                 </Button>
               )}
             </div>
+
+            {/* خلاصه‌ی خطاها — کاربر قبل از زدن دکمه می‌داند چه مانده */}
+            {errorCount > 0 && (
+              <div className="flex items-center gap-1.5 text-xs text-destructive">
+                <AlertCircle className="size-3.5 shrink-0" />
+                <span>{errorCount} فیلد ناقص است</span>
+              </div>
+            )}
             <div className="flex gap-2">
               <Button variant="outline" onClick={() => setDialogOpen(false)}>لغو</Button>
               {step < STEPS.length - 1 ? (
@@ -586,7 +983,12 @@ export default function ProfilesPage() {
                   مرحله بعد<ChevronLeft className="size-4 mr-1" />
                 </Button>
               ) : (
-                <Button onClick={handleSave} disabled={saving}>
+                <Button
+                  onClick={handleSave}
+                  disabled={saving}
+                  variant={errorCount > 0 ? 'outline' : 'default'}
+                  title={errorCount > 0 ? `${errorCount} فیلد ناقص است` : undefined}
+                >
                   {saving && <Loader2 className="size-4 ml-1 animate-spin" />}
                   {saving ? '...' : 'ذخیره و تأیید'}
                 </Button>
@@ -724,7 +1126,7 @@ function parsePlateParts(v: string): { two: string; letter: string; three: strin
   return { two: '', letter: '', three: '', iran: '' }
 }
 
-function PlateField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function PlateField({ value, onChange, error }: { value: string; onChange: (v: string) => void; error?: string }) {
   const p = parsePlateParts(value || '')
 
   const emit = (two: string, letter: string, three: string, iran: string) => {
@@ -735,7 +1137,7 @@ function PlateField({ value, onChange }: { value: string; onChange: (v: string) 
 
   return (
     <div className="space-y-1.5 col-span-2">
-      <Label className="text-xs">شماره پلاک *</Label>
+      <Label className={`text-xs ${error ? 'text-destructive' : ''}`}>شماره پلاک *</Label>
 
       <div className="flex items-end gap-2" dir="ltr">
         <div className="flex flex-col items-center">
@@ -785,34 +1187,49 @@ function PlateField({ value, onChange }: { value: string; onChange: (v: string) 
         همان‌طور که روی پلاک نوشته شده وارد کنید. ذخیره‌شده:{' '}
         <span className="font-mono font-bold">{value || '—'}</span>
       </p>
+      {error && (
+        <p className="flex items-center gap-1 text-[11px] text-destructive">
+          <AlertCircle className="size-3 shrink-0" />
+          {error}
+        </p>
+      )}
     </div>
   )
 }
 
-function Field({ label, value, onChange, placeholder }: {
-  label: string; value: string | number; onChange: (v: string) => void; placeholder?: string
+function Field({ label, value, onChange, placeholder, error }: {
+  label: string; value: string | number; onChange: (v: string) => void
+  placeholder?: string; error?: string
 }) {
   return (
     <div className="space-y-1.5">
-      <Label className="text-xs">{label}</Label>
+      <Label className={`text-xs ${error ? 'text-destructive' : ''}`}>{label}</Label>
       <Input
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="h-9"
+        aria-invalid={!!error}
+        className={`h-9 ${error ? 'border-destructive focus-visible:ring-destructive/30' : ''}`}
       />
+      {error && (
+        <p className="flex items-center gap-1 text-[11px] text-destructive">
+          <AlertCircle className="size-3 shrink-0" />
+          {error}
+        </p>
+      )}
     </div>
   )
 }
 
-function FieldSelect({ label, value, onChange, options, placeholder }: {
-  label: string; value: string; onChange: (v: string) => void; options: string[]; placeholder?: string
+function FieldSelect({ label, value, onChange, options, placeholder, error }: {
+  label: string; value: string; onChange: (v: string) => void; options: string[]
+  placeholder?: string; error?: string
 }) {
   return (
     <div className="space-y-1.5">
-      <Label className="text-xs">{label}</Label>
+      <Label className={`text-xs ${error ? 'text-destructive' : ''}`}>{label}</Label>
       <Select value={value || 'none'} onValueChange={(v) => onChange((v ?? '') === 'none' ? '' : (v ?? ''))}>
-        <SelectTrigger className="h-9"><SelectValue placeholder={placeholder} /></SelectTrigger>
+        <SelectTrigger className={`h-9 ${error ? 'border-destructive' : ''}`}><SelectValue placeholder={placeholder} /></SelectTrigger>
         <SelectContent>
           <SelectItem value="none">انتخاب کنید</SelectItem>
           {options.map((o) => (
@@ -820,6 +1237,12 @@ function FieldSelect({ label, value, onChange, options, placeholder }: {
           ))}
         </SelectContent>
       </Select>
+      {error && (
+        <p className="flex items-center gap-1 text-[11px] text-destructive">
+          <AlertCircle className="size-3 shrink-0" />
+          {error}
+        </p>
+      )}
     </div>
   )
 }

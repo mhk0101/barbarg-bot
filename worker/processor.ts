@@ -126,6 +126,23 @@ export async function processWaybillJob(taskId: string): Promise<void> {
     await log(taskId, 'info',
       `داده آماده — راننده ${data.driver.name} | کالا ${data.cargo.name} ${data.cargo.weightTon} تن | ` +
       `${data.origin.city} ← ${data.destination.city}`)
+
+    /* مشخصات را همین اول در نتیجه ثبت کن — حتی اگر بعدا شکست بخورد،
+       در صفحه‌ی نتایج معلوم باشد برای کدام پلاک و راننده بود.
+
+       نکته: ستون accountId به جدول Account اشاره دارد ولی ما از
+       BarBargAccount استفاده می‌کنیم؛ پس مشخصات حساب را در
+       فیلدهای متنی ذخیره می‌کنیم (نقض کلید خارجی رخ ندهد). */
+    await prisma.automationResult.update({
+      where: { id: automationResult.id },
+      data: {
+        plate: profile.plateNumber,
+        driver: data.driver.name,
+        vehicle: `${data.driver.name}${data.driver.nationalId ? ` (${data.driver.nationalId})` : ''}`,
+        sender: `${data.sender.firstName} ${data.sender.lastName}`.trim(),
+        receiver: `${data.receiver.firstName} ${data.receiver.lastName}`.trim(),
+      },
+    }).catch(() => {})
     await log(taskId, 'info', DO_SUBMIT ? 'حالت: ثبت واقعی' : 'حالت: آزمایشی (dry-run) — دکمه ثبت نهایی زده نمی‌شود')
 
     // ─── ۳) اجرای موتور (همان test-step1.js) ───
@@ -258,6 +275,70 @@ export async function processWaybillJob(taskId: string): Promise<void> {
          است نیم ساعت بعد سالم باشد، پس وظیفه باید دوباره در صف برود
        dead / login → مشکل محلی است، تکرار منطقی است */
     const engineExhausted = ['block', 'waf'].includes(kind)
+
+    /* ─── مشخصات حساب باربگ اشتباه است یا حساب مسدود شده ───
+       این خطا با تکرار حل نمی‌شود. علاوه بر متوقف کردن این وظیفه:
+         ۱) حساب غیرفعال می‌شود تا بقیه‌ی وظایف هم بی‌خود تلاش نکنند
+         ۲) وظایف در انتظار همین حساب لغو می‌شوند
+         ۳) اعلان ساخته می‌شود تا کاربر فورا بفهمد
+       وگرنه ۱۰ بارنامه‌ی بعدی هم یکی‌یکی همان خطا را می‌گیرند و
+       تلاش‌های پیاپی ممکن است حساب را در سامانه قفل کند. */
+    if (kind === 'bad_credentials' || kind === 'account_locked') {
+      const isLocked = kind === 'account_locked'
+      const title = isLocked ? 'حساب باربگ مسدود است' : 'مشخصات حساب باربگ اشتباه است'
+
+      await log(taskId, 'error', errMsg)
+      await log(taskId, 'error', `حساب «${account.accountName}» (${account.username}) غیرفعال شد`)
+
+      // ۱) حساب را غیرفعال کن
+      await prisma.barBargAccount.update({
+        where: { id: account.id },
+        data: { status: 'inactive', lastError: errMsg },
+      }).catch(() => {})
+
+      // ۲) وظایف در انتظار همین حساب را لغو کن
+      let cancelled = 0
+      try {
+        const victims = await prisma.job.findMany({
+          where: { status: 'pending', profile: { accountId: account.id } },
+          select: { id: true },
+        })
+        if (victims.length) {
+          const ids = victims.map((v) => v.id)
+          await prisma.job.updateMany({
+            where: { id: { in: ids } },
+            data: { status: 'cancelled', error: title, completedAt: new Date() },
+          })
+          cancelled = ids.length
+
+          const { automationQueue } = await import('./queue')
+          const queued = await automationQueue.getJobs(['waiting', 'delayed', 'paused'])
+          for (const qj of queued) {
+            if (!ids.includes(qj?.data?.taskId)) continue
+            try { await qj.remove() } catch { /* مهم نیست */ }
+          }
+        }
+      } catch { /* لغو دسته‌جمعی بهتره ولی الزامی نیست */ }
+
+      if (cancelled > 0) {
+        await log(taskId, 'warn', `${cancelled} وظیفه‌ی در انتظار این حساب لغو شد`)
+      }
+
+      // ۳) اعلان
+      await notify(
+        title,
+        `حساب «${account.accountName}» (${account.username}): ${errMsg}` +
+        (cancelled > 0 ? ` — ${cancelled} وظیفه‌ی در انتظار لغو شد.` : ''),
+        'error',
+      )
+
+      await prisma.job.update({
+        where: { id: taskId },
+        data: { status: 'failed', error: errMsg, completedAt: new Date() },
+      })
+      await createErrorLog(taskId, errMsg)
+      return
+    }
 
     if (PERMANENT.test(errMsg) || kind === 'permanent') {
       await log(taskId, 'error', 'خطای دائمی — تلاش مجدد انجام نمی‌شود، داده را اصلاح کنید')

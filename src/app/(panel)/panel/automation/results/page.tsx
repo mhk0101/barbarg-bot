@@ -1,7 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
-import { usePolling } from '@/hooks/usePolling'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -28,7 +27,20 @@ interface AutomationResult {
   screenshotPath: string | null; htmlSnapshotPath: string | null; currentUrl: string | null
   playwrightLog: unknown; createdAt: string; updatedAt: string
   account?: Account | null; worker?: Worker | null; job?: Job | null
+  /* فیلدهای تخت‌شده که API از مسیر پروفایل می‌سازد */
+  profileName?: string | null
+  driverName?: string | null
+  driverNationalId?: string | null
+  accountHolder?: string | null
+  accountUsername?: string | null
+  accountStatus?: string | null
+  accountLastError?: string | null
+  badCredentials?: boolean
 }
+
+/* تعداد سطر در هر صفحه — یک جا تعریف می‌شود تا شماره‌ی ردیف
+   همیشه با درخواست هماهنگ بماند */
+const PAGE_SIZE = 20
 
 const statusConfig: Record<string, { color: string; label: string; icon: React.ReactNode }> = {
   success: { color: 'bg-green-500/10 text-green-500', label: 'موفق', icon: <CheckCircle className="size-3" /> },
@@ -36,6 +48,10 @@ const statusConfig: Record<string, { color: string; label: string; icon: React.R
   warning: { color: 'bg-orange-500/10 text-orange-500', label: 'هشدار', icon: <AlertTriangle className="size-3" /> },
   running: { color: 'bg-blue-500/10 text-blue-500', label: 'در حال اجرا', icon: <Loader2 className="size-3 animate-spin" /> },
   pending: { color: 'bg-gray-500/10 text-gray-500', label: 'در انتظار', icon: <Clock className="size-3" /> },
+  /* وضعیت‌هایی که ورکر واقعا می‌نویسد ولی اینجا تعریف نشده بودند */
+  completed: { color: 'bg-green-500/10 text-green-500', label: 'موفق', icon: <CheckCircle className="size-3" /> },
+  cancelled: { color: 'bg-gray-500/10 text-gray-500', label: 'لغو شده', icon: <XCircle className="size-3" /> },
+  paused: { color: 'bg-orange-500/10 text-orange-500', label: 'متوقف', icon: <AlertTriangle className="size-3" /> },
 }
 
 export default function AutomationResultsPage() {
@@ -57,7 +73,7 @@ export default function AutomationResultsPage() {
     try {
       const params = new URLSearchParams()
       params.set('page', String(page))
-      params.set('limit', '20')
+      params.set('limit', String(PAGE_SIZE))
       if (statusFilter !== 'all') params.set('status', statusFilter)
       if (search) params.set('search', search)
       if (dateFrom) params.set('dateFrom', dateFrom)
@@ -78,7 +94,41 @@ export default function AutomationResultsPage() {
 
   useEffect(() => { fetchResults() }, [fetchResults])
 
-  usePolling(fetchResults, 5000)
+  /* بروزرسانی خودکار حذف شد — کاربر خودش دکمه را می‌زند.
+     ولی در پس‌زمینه فقط تعداد را می‌پاییم تا اگر نتیجه‌ی تازه‌ای آمد،
+     به او اطلاع بدهیم (خود جدول دست‌نخورده می‌ماند). */
+  const [pendingNew, setPendingNew] = useState(0)
+  const seenTotal = useRef<number | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    const check = async () => {
+      if (document.hidden) return
+      try {
+        const params = new URLSearchParams({ page: '1', limit: '1' })
+        if (statusFilter !== 'all') params.set('status', statusFilter)
+        if (search) params.set('search', search)
+        if (dateFrom) params.set('dateFrom', dateFrom)
+        if (dateTo) params.set('dateTo', dateTo)
+        const res = await fetch(`/api/automation/results?${params}`)
+        const d = await res.json()
+        const t = d?.pagination?.total ?? 0
+        if (!alive) return
+        if (seenTotal.current === null) { seenTotal.current = t; return }
+        if (t > seenTotal.current) setPendingNew(t - seenTotal.current)
+      } catch { /* مهم نیست */ }
+    }
+    const id = setInterval(check, 15000)
+    return () => { alive = false; clearInterval(id) }
+  }, [statusFilter, search, dateFrom, dateTo])
+
+  /* وقتی کاربر خودش بروزرسانی کرد، شمارنده صفر می‌شود */
+  const handleRefresh = useCallback(async () => {
+    setPendingNew(0)
+    seenTotal.current = null
+    await fetchResults()
+    toast.success('فهرست بروزرسانی شد')
+  }, [fetchResults])
 
   const openDetail = async (result: AutomationResult) => {
     try {
@@ -133,8 +183,51 @@ export default function AutomationResultsPage() {
           <h1 className="text-3xl font-bold">نتایج اتوماسیون</h1>
           <p className="text-muted-foreground">مشاهده و مدیریت نتایج عملیات خودکار</p>
         </div>
-        <Button variant="outline" onClick={fetchResults}><RefreshCw className="size-4" /></Button>
+        <Button
+          variant={pendingNew > 0 ? 'default' : 'outline'}
+          onClick={handleRefresh}
+          disabled={loading}
+          className="relative"
+        >
+          <RefreshCw className={`size-4 ml-2 ${loading ? 'animate-spin' : ''}`} />
+          بروزرسانی
+          {pendingNew > 0 && (
+            <span className="absolute -top-1.5 -left-1.5 flex size-5 items-center justify-center rounded-full bg-destructive text-[10px] font-bold text-white">
+              {pendingNew > 9 ? '۹+' : pendingNew.toLocaleString('fa-IR')}
+            </span>
+          )}
+        </Button>
       </div>
+
+      {/* این صفحه خودکار تازه نمی‌شود — به کاربر یادآوری کن */}
+      <AnimatePresence>
+        {pendingNew > 0 ? (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
+            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3"
+          >
+            <div className="flex items-center gap-2 text-sm">
+              <AlertTriangle className="size-4 shrink-0 text-primary" />
+              <span>
+                <b>{pendingNew.toLocaleString('fa-IR')}</b> نتیجه‌ی جدید ثبت شده —
+                برای دیدنشان دکمه‌ی بروزرسانی را بزنید
+              </span>
+            </div>
+            <Button size="sm" onClick={handleRefresh} disabled={loading}>
+              <RefreshCw className={`size-3.5 ml-1.5 ${loading ? 'animate-spin' : ''}`} />
+              بروزرسانی کن
+            </Button>
+          </motion.div>
+        ) : (
+          <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/30 px-4 py-2 text-xs text-muted-foreground">
+            <Clock className="size-3.5 shrink-0" />
+            <span>
+              این صفحه خودکار بروز نمی‌شود. برای دیدن نتایج تازه،
+              دکمه‌ی «بروزرسانی» را بزنید.
+            </span>
+          </div>
+        )}
+      </AnimatePresence>
 
       <Card>
         <CardContent className="p-4">
@@ -190,65 +283,94 @@ export default function AutomationResultsPage() {
 
       <Card>
         <CardContent>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          {/* ۱۳ ستون در عرض صفحه جا نمی‌شود. با min-width و اسکرول افقی
+              هر ستون فضای خودش را دارد و متن‌ها روی هم نمی‌افتند. */}
+          <p className="mb-2 text-[11px] text-muted-foreground lg:hidden">
+            برای دیدن همه‌ی ستون‌ها، جدول را به چپ و راست بکشید
+          </p>
+          <div className="-mx-2 overflow-x-auto px-2">
+            <table className="w-full min-w-[1900px] table-auto border-separate border-spacing-0 text-sm">
               <thead>
-                <tr className="border-b text-right text-muted-foreground">
-                  <th className="pb-3 font-medium">تاریخ</th>
-                  <th className="pb-3 font-medium">پلاک</th>
-                  <th className="pb-3 font-medium">شماره باربرگ</th>
-                  <th className="pb-3 font-medium">حساب</th>
-                  <th className="pb-3 font-medium">ورکر</th>
-                  <th className="pb-3 font-medium">وضعیت</th>
-                  <th className="pb-3 font-medium">پیام</th>
-                  <th className="pb-3 font-medium">مدت</th>
-                  <th className="pb-3 font-medium">تلاش</th>
-                  <th className="pb-3 font-medium">اسکرین‌شات</th>
-                  <th className="pb-3 font-medium text-left">عملیات</th>
+                <tr className="text-muted-foreground">
+                  <th style={{ width: 56 }}   className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">ردیف</th>
+                  <th style={{ width: 150 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">تاریخ و ساعت</th>
+                  <th style={{ width: 120 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">پلاک</th>
+                  <th style={{ width: 130 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">راننده</th>
+                  <th style={{ width: 120 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">کد ملی راننده</th>
+                  <th style={{ width: 130 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">دارنده‌ی حساب</th>
+                  <th style={{ width: 120 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">کد ملی حساب</th>
+                  <th style={{ width: 90 }}   className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">رمز</th>
+                  <th style={{ width: 120 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">کد پیگیری</th>
+                  <th style={{ width: 110 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">وضعیت</th>
+                  <th style={{ width: 240 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">پیام</th>
+                  <th style={{ width: 90 }}   className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">اسکرین‌شات</th>
+                  <th style={{ width: 110 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-left font-medium">عملیات</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={11} className="py-8 text-center text-muted-foreground">در حال بارگذاری...</td></tr>
+                  <tr><td colSpan={13} className="px-3 py-8 text-center text-muted-foreground">در حال بارگذاری...</td></tr>
                 ) : results.length === 0 ? (
-                  <tr><td colSpan={11} className="py-8 text-center text-muted-foreground">داده‌ای یافت نشد</td></tr>
-                ) : results.map((r) => {
+                  <tr><td colSpan={13} className="px-3 py-8 text-center text-muted-foreground">داده‌ای یافت نشد</td></tr>
+                ) : results.map((r, idx) => {
                   const sc = statusConfig[r.status] || statusConfig.pending
+                  /* شماره‌ی پیوسته در کل صفحه‌ها، نه فقط صفحه‌ی جاری */
+                  const rowNo = (page - 1) * PAGE_SIZE + idx + 1
                   return (
                     <tr
                       key={r.id}
-                      className="border-b last:border-0 hover:bg-muted/30 cursor-pointer"
+                      className="cursor-pointer hover:bg-muted/30 [&>td]:border-b [&>td]:border-border/60"
                       onClick={() => openDetail(r)}
                     >
-                      <td className="py-3 text-xs text-muted-foreground">
-                        {new Date(r.createdAt).toLocaleString('fa')}
+                      <td className="px-3 py-3 text-xs font-medium text-muted-foreground">
+                        {rowNo.toLocaleString('fa-IR')}
                       </td>
-                      <td className="py-3 font-medium">{r.plate || '-'}</td>
-                      <td className="py-3 text-muted-foreground">{r.waybillNumber || '-'}</td>
-                      <td className="py-3">{r.account?.username || '-'}</td>
-                      <td className="py-3 text-muted-foreground">{r.worker?.name || '-'}</td>
-                      <td className="py-3">
+                      <td className="px-3 py-3 text-xs text-muted-foreground whitespace-nowrap">
+                        {new Date(r.createdAt).toLocaleString('fa-IR', {
+                          year: 'numeric', month: '2-digit', day: '2-digit',
+                          hour: '2-digit', minute: '2-digit', second: '2-digit',
+                        })}
+                      </td>
+                      <td className="px-3 py-3 font-medium whitespace-nowrap">{r.plate || '-'}</td>
+                      <td className="px-3 py-3 whitespace-nowrap">{r.driverName || '-'}</td>
+                      <td className="px-3 py-3 font-mono text-xs text-muted-foreground">{r.driverNationalId || '-'}</td>
+                      <td className="px-3 py-3 whitespace-nowrap">{r.accountHolder || '-'}</td>
+                      <td className="px-3 py-3 font-mono text-xs text-muted-foreground">{r.accountUsername || '-'}</td>
+                      <td className="px-3 py-3">
+                        {/* رمز واقعی هرگز نمایش داده نمی‌شود — فقط درستی‌اش */}
+                        {r.badCredentials ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] font-medium text-destructive whitespace-nowrap">
+                            <XCircle className="size-3" /> اشتباه
+                          </span>
+                        ) : r.status === 'completed' ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-green-500/10 px-2 py-0.5 text-[11px] font-medium text-green-600 whitespace-nowrap">
+                            <CheckCircle className="size-3" /> درست
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 font-mono text-xs font-medium">
+                        {r.waybillNumber
+                          ? <span className="text-green-600">{r.waybillNumber}</span>
+                          : <span className="text-muted-foreground">-</span>}
+                      </td>
+                      <td className="px-3 py-3">
                         <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${sc.color}`}>
                           {sc.icon} {sc.label}
                         </span>
                       </td>
-                      <td className="py-3 text-xs max-w-[200px] truncate text-muted-foreground">
-                        {r.resultMessage || '-'}
+                      <td className="px-3 py-3 text-xs text-muted-foreground">
+                        <span className="line-clamp-2 break-words" title={r.resultMessage || ''}>
+                          {r.resultMessage || '-'}
+                        </span>
                       </td>
-                      <td className="py-3 text-xs text-muted-foreground">
-                        {formatDuration(r.duration)}
-                      </td>
-                      <td className="py-3 text-center">
-                        {r.retryCount > 0 ? (
-                          <Badge variant="outline" className="text-[10px]">{r.retryCount}</Badge>
-                        ) : '-'}
-                      </td>
-                      <td className="py-3">
+                      <td className="px-3 py-3">
                         {r.screenshotPath ? (
                           <Image className="size-4 text-green-500" />
                         ) : '-'}
                       </td>
-                      <td className="py-3">
+                      <td className="px-3 py-3">
                         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
                           <Button size="sm" variant="ghost" onClick={() => openDetail(r)}>
                             <Eye className="size-4" />

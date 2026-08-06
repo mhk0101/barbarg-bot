@@ -58,6 +58,26 @@ export async function GET(request: NextRequest) {
         include: {
           account: { select: { id: true, username: true } },
           worker: { select: { id: true, name: true } },
+          /* مشخصات حساب باربگ و راننده از مسیر پروفایل می‌آید.
+             ستون accountId به جدول Account اشاره دارد نه BarBargAccount،
+             پس همیشه خالی است. */
+          job: {
+            select: {
+              id: true,
+              error: true,
+              profile: {
+                select: {
+                  name: true,
+                  plateNumber: true,
+                  driverName: true,
+                  driverNationalId: true,
+                  barbargAccount: {
+                    select: { accountName: true, username: true, status: true, lastError: true },
+                  },
+                },
+              },
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
@@ -66,8 +86,30 @@ export async function GET(request: NextRequest) {
       prisma.automationResult.count({ where }),
     ])
 
+    /* تخت کردن خروجی تا صفحه لازم نباشد در چند لایه بگردد */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const shaped = data.map((r: any) => {
+      const p = r.job?.profile ?? null
+      const ba = p?.barbargAccount ?? null
+      const msg = `${r.resultMessage ?? ''} ${r.job?.error ?? ''}`
+      return {
+        ...r,
+        profileName: p?.name ?? null,
+        plate: r.plate ?? p?.plateNumber ?? null,
+        driverName: r.driver ?? p?.driverName ?? null,
+        driverNationalId: p?.driverNationalId ?? null,
+        accountHolder: ba?.accountName ?? null,
+        accountUsername: ba?.username ?? r.account?.username ?? null,
+        accountStatus: ba?.status ?? null,
+        accountLastError: ba?.lastError ?? null,
+        /* آیا علت شکست، اشتباه بودن رمز یا نام کاربری بوده؟ */
+        badCredentials:
+          /رمز عبور|نام کاربری|کاربری با این مشخصات|کاربری یافت نشد|مسدود|غیرفعال/.test(msg),
+      }
+    })
+
     return NextResponse.json({
-      data,
+      data: shaped,
       pagination: {
         page,
         limit,

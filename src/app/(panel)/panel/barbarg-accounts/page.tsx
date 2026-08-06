@@ -9,7 +9,7 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { toast } from 'sonner'
-import { Plus, Pencil, Trash2, Search, Shield, ShieldOff, Eye, EyeOff, Users, UserCheck, UserX, CheckCircle, XCircle, Key, Loader2, ChevronLeft, ChevronRight, Globe, Terminal, Clock } from 'lucide-react'
+import { Plus, Pencil, Trash2, Search, Shield, ShieldOff, Eye, EyeOff, Users, UserCheck, UserX, CheckCircle, XCircle, Key, Loader2, ChevronLeft, ChevronRight, Globe, Terminal, Clock, Download } from 'lucide-react'
 
 interface BarbargAccount { id: string; accountName: string; username: string; company: string | null; status: string; lastLogin: string | null; lastError: string | null; notes: string | null; createdAt: string; updatedAt: string }
 interface Stats { total: number; active: number; disabled: number; successfulToday: number; failedToday: number }
@@ -72,6 +72,56 @@ export default function BarbargAccountsPage() {
   useEffect(() => {
     stepsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [loginSession?.steps])
+
+  const [importingId, setImportingId] = useState<string | null>(null)
+
+  /**
+   * واردات خودکار مشخصات از آخرین بارنامه‌ی ثبت‌شدهی حساب.
+   * ربات وارد سایت می‌شود → تاریخچه → جزئیات → همه‌ی فیلدها را می‌خواند
+   * و یک پروفایل می‌سازد تا کاربر مجبور نباشد دستی وارد کند.
+   */
+  const handleImportProfile = async (id: string, name: string) => {
+    if (importingId) return
+    setImportingId(id)
+    const tid = toast.loading(`در حال ورود به سامانه و خواندن آخرین بارنامه‌ی «${name}»…`, {
+      description: 'عمدا آرام انجام می‌شود تا سایت IP را بلاک نکند — ۲ تا ۳ دقیقه',
+    })
+    try {
+      const res = await fetch('/api/barbarg-accounts/import-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: id, createProfile: true }),
+      })
+      const d = await res.json()
+
+      if (!res.ok || d.error) {
+        toast.error(d.error || 'واردات ناموفق بود', {
+          id: tid,
+          duration: 8000,
+          description: d.accountHolderName
+            ? `ولی نام دارنده‌ی حساب خوانده شد: ${d.accountHolderName}`
+            : undefined,
+        })
+        fetchAccounts()
+        return
+      }
+
+      const p = d.data || {}
+      toast.success('پروفایل از آخرین بارنامه ساخته شد', {
+        id: tid,
+        duration: 10000,
+        description:
+          `پلاک ${p.plateNumber || '—'} | راننده ${p.driverName || '—'} | ` +
+          `${p.originCity || '—'} ← ${p.destCity || '—'}. ` +
+          'موبایل و کد ملی فرستنده/گیرنده و کرایه را در صفحه پروفایل‌ها تکمیل کنید.',
+      })
+      fetchAccounts()
+    } catch (e) {
+      toast.error('خطا در ارتباط با سرور', { id: tid })
+    } finally {
+      setImportingId(null)
+    }
+  }
 
   const handleSave = async () => {
     if (!form.accountName || !form.username) { toast.error('نام حساب و نام کاربری الزامی است'); return }
@@ -213,6 +263,16 @@ export default function BarbargAccountsPage() {
                   </Button>
                   <Button size="sm" variant="ghost" onClick={() => toggleStatus(a.id, a.status)} title={a.status === 'active' ? 'غیرفعال کردن' : 'فعال کردن'}>
                     {a.status === 'active' ? <ShieldOff className="size-4 text-yellow-500" /> : <Shield className="size-4 text-green-500" />}
+                  </Button>
+                  <Button
+                    size="sm" variant="ghost"
+                    onClick={() => handleImportProfile(a.id, a.accountName)}
+                    disabled={importingId === a.id}
+                    title="واردات خودکار مشخصات از آخرین بارنامه"
+                  >
+                    {importingId === a.id
+                      ? <Loader2 className="size-4 animate-spin" />
+                      : <Download className="size-4 text-emerald-500" />}
                   </Button>
                   <Button size="sm" variant="ghost" onClick={() => openEdit(a)} title="ویرایش"><Pencil className="size-4" /></Button>
                   <Button size="sm" variant="ghost" onClick={() => handleDelete(a.id, a.accountName)} title="حذف"><Trash2 className="size-4 text-destructive" /></Button>

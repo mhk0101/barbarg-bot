@@ -1,5 +1,7 @@
 'use client'
 
+import { useRouter } from 'next/navigation'
+
 import { useState, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { Card, CardContent } from '@/components/ui/card'
@@ -8,7 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
-import { FileSpreadsheet, FileText, Download, Loader2, BarChart3, CheckCircle2, XCircle, Clock } from 'lucide-react'
+import { FileSpreadsheet, FileText, Download, Loader2, BarChart3, CheckCircle2, XCircle, Clock, ChevronRight } from 'lucide-react'
 
 interface AutomationRow {
   id: string
@@ -60,6 +62,7 @@ function formatDuration(ms: number | null) {
 }
 
 export default function ReportExportPage() {
+  const router = useRouter()
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [status, setStatus] = useState('all')
@@ -145,7 +148,15 @@ export default function ReportExportPage() {
     try {
       const qs = buildQueryParams()
       const res = await fetch(`/api/reports/export?format=${format}&${qs}`)
-      if (!res.ok) throw new Error('Export failed')
+      if (!res.ok) {
+        /* پیام واقعی سرور را نشان بده، نه یک جمله‌ی کلی */
+        let msg = 'خطا در تولید خروجی'
+        try {
+          const d = await res.json()
+          if (d?.error) msg = d.error
+        } catch { /* پاسخ JSON نبود */ }
+        throw new Error(msg)
+      }
       const blob = await res.blob()
       const ext = format === 'xlsx' ? 'xlsx' : format === 'pdf' ? 'pdf' : 'csv'
       const mime = format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : format === 'pdf' ? 'application/pdf' : 'text/csv'
@@ -156,8 +167,10 @@ export default function ReportExportPage() {
       a.click()
       URL.revokeObjectURL(url)
       toast.success(`فایل ${ext.toUpperCase()} دانلود شد`)
-    } catch {
-      toast.error('خطا در تولید خروجی')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'خطا در تولید خروجی'
+      toast.error(msg, { duration: 10000 })
+      console.error('[Export]', e)
     }
     setExporting(null)
   }
@@ -169,6 +182,9 @@ export default function ReportExportPage() {
           <h1 className="text-3xl font-bold">خروجی گزارش</h1>
           <p className="text-muted-foreground">تولید و دانلود گزارش عملیات ثبت باربرگ</p>
         </div>
+        <Button variant="outline" onClick={() => router.push('/panel/reports')}>
+          <ChevronRight className="size-4 ml-2" /> بازگشت به گزارش‌ها
+        </Button>
       </div>
 
       <Card>

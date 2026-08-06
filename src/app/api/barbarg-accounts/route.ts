@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { encryptPassword } from '@/lib/encryption'
 
 export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
+
   try {
     const { searchParams } = new URL(request.url)
     const search = searchParams.get('search') || ''
@@ -58,6 +62,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
+
   try {
     const body = await request.json()
     if (!body.accountName || !body.username || !body.password) {

@@ -1,5 +1,7 @@
 'use client'
 
+import { useRouter } from 'next/navigation'
+
 import { useState, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import dynamic from 'next/dynamic'
@@ -7,7 +9,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from 'sonner'
-import { Download, Loader2 } from 'lucide-react'
+import { Download, Loader2, FileText } from 'lucide-react'
 
 const DailyChart = dynamic(
   () => import('./ReportCharts').then((m) => ({ default: m.DailyChart })),
@@ -24,6 +26,7 @@ interface DailyData { day: string; success: number; failed: number }
 interface WeeklyData { week: string; success: number; failed: number }
 
 export default function ReportsPage() {
+  const router = useRouter()
   const [stats, setStats] = useState<ReportStats>({ total: 0, completed: 0, failed: 0, pending: 0, successRate: 0, totalWaybills: 0, totalAccounts: 0, totalPlates: 0 })
   const [dailyData, setDailyData] = useState<DailyData[]>([])
   const [weeklyData, setWeeklyData] = useState<WeeklyData[]>([])
@@ -59,6 +62,10 @@ export default function ReportsPage() {
         <div><h1 className="text-3xl font-bold">گزارش‌ها</h1><p className="text-muted-foreground">گزارش عملکرد سیستم</p></div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => handleExport('excel')}><Download className="size-4 ml-2" /> اکسل</Button>
+          {/* صفحه‌ی خروجی پیشرفته وجود داشت ولی هیچ لینکی به آن نبود */}
+          <Button onClick={() => router.push('/panel/reports/export')}>
+            <FileText className="size-4 ml-2" /> خروجی PDF و اکسل
+          </Button>
         </div>
       </div>
 

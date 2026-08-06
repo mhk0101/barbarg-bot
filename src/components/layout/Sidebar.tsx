@@ -1,5 +1,6 @@
 'use client'
 
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { motion } from 'framer-motion'
@@ -42,8 +43,8 @@ const sections = [
       { label: 'مرکز کنترل', href: '/panel/automation', icon: Bot },
       { label: 'وضعیت بلادرنگ', href: '/panel/live-status', icon: Eye },
       { label: 'صف وظایف', href: '/panel/automation/queue', icon: ListOrdered },
-      { label: 'ورکرها', href: '/panel/automation/workers', icon: Cpu },
-      { label: 'نشست مرورگر', href: '/panel/automation/browsers', icon: Globe },
+      { label: 'ورکرها', href: '/panel/automation/workers', icon: Cpu, perm: 'manage_workers' },
+      { label: 'نشست مرورگر', href: '/panel/automation/browsers', icon: Globe, perm: 'manage_workers' },
       { label: 'کپچا', href: '/panel/captcha', icon: Hash },
       { label: 'فوروارد پیامک', href: '/panel/sms', icon: MessageSquare },
       { label: 'نقشه‌برداری', href: '/panel/mapping', icon: Map },
@@ -62,22 +63,23 @@ const sections = [
   {
     label: 'ابزارها',
     items: [
-      { label: 'گزارش‌ها', href: '/panel/reports', icon: BarChart3 },
+      { label: 'گزارش‌ها', href: '/panel/reports', icon: BarChart3, perm: 'view_reports' },
+      { label: 'خروجی PDF و اکسل', href: '/panel/reports/export', icon: FileText, perm: 'export_pdf' },
       { label: 'تحلیل پلاک‌ها', href: '/panel/plate-analytics', icon: PieChart },
-      { label: 'خروجی اکسل', href: '/panel/excel', icon: BarChart3 },
+      { label: 'خروجی اکسل', href: '/panel/excel', icon: BarChart3, perm: 'export_excel' },
       { label: 'تاریخچه ثبت', href: '/panel/history', icon: ScrollText },
-      { label: 'لاگ‌ها', href: '/panel/logs', icon: ScrollText },
+      { label: 'لاگ‌ها', href: '/panel/logs', icon: ScrollText, perm: 'view_logs' },
       { label: 'اعلان‌ها', href: '/panel/notifications', icon: AlertTriangle },
     ],
   },
   {
     label: 'مدیریت',
     items: [
-      { label: 'حساب‌های باربگ', href: '/panel/barbarg-accounts', icon: UserCheck },
-      { label: 'کاربران', href: '/panel/users', icon: UserCog },
-      { label: 'نقش‌ها', href: '/panel/roles', icon: Shield },
-      { label: 'تنظیمات', href: '/panel/settings', icon: Settings },
-      { label: 'سلامت سیستم', href: '/panel/system-health', icon: Cpu },
+      { label: 'حساب‌های باربگ', href: '/panel/barbarg-accounts', icon: UserCheck, perm: 'manage_settings' },
+      { label: 'کاربران', href: '/panel/users', icon: UserCog, perm: 'manage_users' },
+      { label: 'نقش‌ها', href: '/panel/roles', icon: Shield, perm: 'manage_settings' },
+      { label: 'تنظیمات', href: '/panel/settings', icon: Settings, perm: 'manage_settings' },
+      { label: 'سلامت سیستم', href: '/panel/system-health', icon: Cpu, perm: 'manage_settings' },
     ],
   },
 ]
@@ -101,6 +103,29 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
   const pathname = usePathname()
   const isActive = (href: string) => href === '/panel' ? pathname === '/panel' : pathname.startsWith(href)
 
+  /* دسترسی‌های کاربر را از سرور می‌گیریم (همان چیزی که در
+     صفحه‌ی «نقش‌ها» تعریف شده). محافظت واقعی سمت سرور است؛
+     این فقط برای تمیزی رابط کاربری است. */
+  const [perms, setPerms] = useState<string[] | null>(null)
+  useEffect(() => {
+    let alive = true
+    fetch('/api/auth/my-permissions', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive) setPerms(Array.isArray(d?.permissions) ? d.permissions : []) })
+      .catch(() => { if (alive) setPerms([]) })
+    return () => { alive = false }
+  }, [])
+
+  const can = (perm?: string) => {
+    if (!perm) return true                 // منوی عمومی
+    if (perms === null) return false       // تا نیامده، منوی حساس نشان نده
+    return perms.includes('*') || perms.includes(perm)
+  }
+
+  const visibleSections = sections
+    .map((sec) => ({ ...sec, items: sec.items.filter((it) => can((it as { perm?: string }).perm)) }))
+    .filter((sec) => sec.items.length > 0)
+
   const sidebarContent = (
     <motion.aside
       initial={false}
@@ -113,7 +138,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
         {!collapsed && <span className="text-lg font-bold">باربگ بات</span>}
       </div>
       <div className="flex-1 overflow-y-auto px-3 py-4">
-        {sections.map((section) => (
+        {visibleSections.map((section) => (
           <div key={section.label} className="mb-4">
             {!collapsed && <span className="mb-1 block px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{section.label}</span>}
             {collapsed && <div className="my-2 border-t border-sidebar-border" />}

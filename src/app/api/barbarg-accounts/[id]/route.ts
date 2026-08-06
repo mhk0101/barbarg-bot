@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { encryptPassword } from '@/lib/encryption'
 
-export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
+
   const { id } = await params
   const item = await prisma.barBargAccount.findUnique({
     where: { id },
@@ -12,6 +16,9 @@ export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: s
 }
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
+
   try {
     const { id } = await params
     const body = await request.json()
@@ -36,7 +43,10 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
   }
 }
 
-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
+
   try {
     const { id } = await params
     await prisma.barBargAccount.delete({ where: { id } })

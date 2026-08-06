@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 
 const DEFAULTS: Record<string, unknown> = {
@@ -18,7 +19,10 @@ const DEFAULTS: Record<string, unknown> = {
   'limits.dailyPlateLimit': 100,
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
+
   try {
     const settings = await prisma.setting.findMany()
     const merged: Record<string, unknown> = { ...DEFAULTS }
@@ -30,6 +34,9 @@ export async function GET() {
 }
 
 export async function PUT(request: NextRequest) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
+
   try {
     const body = await request.json()
     const { settings } = body

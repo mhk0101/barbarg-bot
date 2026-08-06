@@ -609,11 +609,15 @@ model RegistrationProfile {
   originCity          String
   originAddress       String?
   originPostalCode    String?
+  /// auto_plate = تشخیص استان از کد ایران پلاک | manual = ورود دستی استان
+  originProvinceMode  String  @default("auto_plate")
 
   destProvince        String
   destCity            String
   destAddress         String?
   destPostalCode      String?
+  /// auto_plate = تشخیص استان از کد ایران پلاک | manual = ورود دستی استان
+  destProvinceMode    String  @default("auto_plate")
 
   advanceFare         String?
   fareType            String?

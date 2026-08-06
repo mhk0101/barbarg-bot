@@ -1,7 +1,12 @@
 import { NextRequest } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import ExcelJS from 'exceljs'
-import PDFDocument from 'pdfkit'
+
+/* pdfkit و exceljs فقط در Node کار می‌کنند (فایل سیستم لازم دارند).
+   هیچ‌کدام بالای فایل ایمپورت نمی‌شوند — وگرنه اگر یکی خطا بدهد،
+   کل مسیر خراب می‌شود و حتی خروجی CSV هم کار نمی‌کند. */
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
+export const maxDuration = 60
 
 interface ReportQuery {
   format: string
@@ -156,6 +161,10 @@ function toCsvRow(values: (string | number | null | undefined)[]): string {
 }
 
 async function generateExcel(rows: AutomationRow[], q: ReportQuery, summary: ReturnType<typeof getReportSummary>) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mod: any = await import('exceljs')
+  const ExcelJS = mod.default ?? mod
+
   const workbook = new ExcelJS.Workbook()
   workbook.creator = 'BarBarg Automation System'
   workbook.created = new Date()
@@ -293,8 +302,15 @@ async function generateExcel(rows: AutomationRow[], q: ReportQuery, summary: Ret
   return workbook.xlsx.writeBuffer()
 }
 
-function generatePdf(rows: AutomationRow[], q: ReportQuery, summary: ReturnType<typeof getReportSummary>): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
+async function generatePdf(rows: AutomationRow[], q: ReportQuery, summary: ReturnType<typeof getReportSummary>): Promise<Buffer> {
+  /* بارگذاری تنبل: فقط وقتی واقعا PDF می‌خواهیم.
+     اگر بالای فایل ایمپورت شود، خروجی اکسل و CSV هم بی‌خود
+     پکیج سنگین pdfkit را بار می‌کنند و اگر آن خطا بدهد، همه می‌شکنند. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mod: any = await import('pdfkit')
+  const PDFDocument = mod.default ?? mod
+
+  return new Promise<Buffer>((resolve, reject) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const doc = new (PDFDocument as any)({
       size: 'A4',
@@ -501,6 +517,25 @@ export async function GET(request: NextRequest) {
     return Response.json({ error: 'فرمت پشتیبانی نمی‌شود' }, { status: 400 })
   } catch (error) {
     console.error('Report export error:', error)
-    return Response.json({ error: 'خطا در تولید گزارش' }, { status: 500 })
+
+    /* پیام واقعی را برگردان — قبلا فقط «خطا در تولید گزارش»
+       دیده می‌شد و علت فقط در کنسول سرور می‌ماند. */
+    const raw = error instanceof Error ? error.message : String(error)
+
+    let hint = raw
+    if (/\.afm|ENOENT|no such file/i.test(raw)) {
+      hint = 'فونت‌های pdfkit پیدا نشدند. ' +
+             'serverExternalPackages در next.config.ts را چک کنید و ' +
+             'سرور را ری‌استارت کنید.'
+    } else if (/Cannot find module|MODULE_NOT_FOUND/i.test(raw)) {
+      hint = 'پکیج لازم نصب نیست: npm install pdfkit exceljs'
+    } else if (/prisma|database|connect/i.test(raw)) {
+      hint = 'اتصال به دیتابیس برقرار نشد'
+    }
+
+    return Response.json(
+      { error: `خطا در تولید گزارش: ${hint}`, detail: raw.slice(0, 300) },
+      { status: 500 },
+    )
   }
 }
