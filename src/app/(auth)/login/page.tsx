@@ -24,6 +24,14 @@ export default function LoginPage() {
     setIsLoading(true)
     setError('')
     try {
+      const net = await fetch('/api/network/status', { cache: 'no-store' }).then((r) => r.json()).catch(() => null)
+      if (!net?.online) {
+        setError('اینترنت یا دسترسی شبکه قطع است؛ ورود انجام نشد')
+        toast.error('اینترنت قطع است', { description: 'قبل از ورود، اتصال اینترنت را بررسی کنید.' })
+        setIsLoading(false)
+        return
+      }
+
       const res = await fetch('/api/auth/login', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password, rememberMe }),

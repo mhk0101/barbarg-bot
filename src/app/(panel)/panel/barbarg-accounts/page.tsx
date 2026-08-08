@@ -16,6 +16,7 @@ interface Stats { total: number; active: number; disabled: number; successfulTod
 interface Pagination { page: number; limit: number; total: number; totalPages: number }
 interface LoginStep { step: string; time: string; status: 'info' | 'success' | 'error' }
 interface LoginSession { status: string; steps: LoginStep[]; screenshotPath: string | null; error: string | null; lastCheck: string | null; elapsed: number }
+interface ImportSession { status: string; logs: string[]; error: string | null; elapsed: number; attempt?: number; profileId?: string | null; data?: Record<string, unknown> | null }
 
 function passwordStrength(pw: string): { score: number; label: string; color: string } {
   let score = 0
@@ -74,53 +75,64 @@ export default function BarbargAccountsPage() {
   }, [loginSession?.steps])
 
   const [importingId, setImportingId] = useState<string | null>(null)
+  const [importDialogOpen, setImportDialogOpen] = useState(false)
+  const [importSession, setImportSession] = useState<ImportSession | null>(null)
+  const [importAccountName, setImportAccountName] = useState('')
+  const importPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const pollImportStatus = useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`/api/barbarg-accounts/import-profile?accountId=${id}`)
+      const d: ImportSession = await res.json()
+      setImportSession(d)
+      if (['success', 'failed', 'cancelled', 'not_found'].includes(d.status)) {
+        if (importPollRef.current) { clearInterval(importPollRef.current); importPollRef.current = null }
+        setImportingId(null)
+        fetchAccounts(); fetchStats()
+        if (d.status === 'success') toast.success('دریافت اطلاعات با موفقیت انجام شد')
+        if (d.status === 'failed') toast.error(d.error || 'دریافت اطلاعات ناموفق بود')
+        if (d.status === 'cancelled') toast.warning('دریافت اطلاعات متوقف شد')
+      }
+    } catch {}
+  }, [fetchAccounts, fetchStats])
 
   /**
-   * واردات خودکار مشخصات از آخرین بارنامه‌ی ثبت‌شدهی حساب.
-   * ربات وارد سایت می‌شود → تاریخچه → جزئیات → همه‌ی فیلدها را می‌خواند
-   * و یک پروفایل می‌سازد تا کاربر مجبور نباشد دستی وارد کند.
+   * دریافت اطلاعات از سامانه با تلاش نامحدود برای خطاهای موقتی.
+   * کاربر هر زمان بخواهد با دکمه توقف عملیات را قطع می‌کند.
    */
   const handleImportProfile = async (id: string, name: string) => {
     if (importingId) return
     setImportingId(id)
-    const tid = toast.loading(`در حال ورود به سامانه و خواندن آخرین بارنامه‌ی «${name}»…`, {
-      description: 'عمدا آرام انجام می‌شود تا سایت IP را بلاک نکند — ۲ تا ۳ دقیقه',
-    })
+    setImportAccountName(name)
+    setImportSession({ status: 'running', logs: ['در حال شروع عملیات...'], error: null, elapsed: 0, attempt: 0 })
+    setImportDialogOpen(true)
     try {
       const res = await fetch('/api/barbarg-accounts/import-profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountId: id, createProfile: true }),
+        body: JSON.stringify({ accountId: id, createProfile: true, async: true }),
       })
       const d = await res.json()
-
-      if (!res.ok || d.error) {
-        toast.error(d.error || 'واردات ناموفق بود', {
-          id: tid,
-          duration: 8000,
-          description: d.accountHolderName
-            ? `ولی نام دارنده‌ی حساب خوانده شد: ${d.accountHolderName}`
-            : undefined,
-        })
-        fetchAccounts()
-        return
-      }
-
-      const p = d.data || {}
-      toast.success('پروفایل از آخرین بارنامه ساخته شد', {
-        id: tid,
-        duration: 10000,
-        description:
-          `پلاک ${p.plateNumber || '—'} | راننده ${p.driverName || '—'} | ` +
-          `${p.originCity || '—'} ← ${p.destCity || '—'}. ` +
-          'موبایل و کد ملی فرستنده/گیرنده و کرایه را در صفحه پروفایل‌ها تکمیل کنید.',
-      })
-      fetchAccounts()
+      if (!res.ok || d.error) throw new Error(d.error || 'شروع عملیات ناموفق بود')
+      setImportSession({ status: d.status || 'running', logs: d.logs || [], error: null, elapsed: 0, attempt: 0 })
+      importPollRef.current = setInterval(() => pollImportStatus(id), 2000)
     } catch (e) {
-      toast.error('خطا در ارتباط با سرور', { id: tid })
-    } finally {
+      setImportSession({ status: 'failed', logs: [], error: e instanceof Error ? e.message : 'خطا در شروع عملیات', elapsed: 0 })
       setImportingId(null)
     }
+  }
+
+  const handleCancelImport = async () => {
+    if (!importingId) { setImportDialogOpen(false); return }
+    try {
+      await fetch('/api/barbarg-accounts/import-profile', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: importingId, action: 'cancel' }),
+      })
+      setImportSession((p) => p ? { ...p, status: 'cancelled', error: 'درخواست توقف ارسال شد' } : p)
+    } catch {}
+    if (importPollRef.current) { clearInterval(importPollRef.current); importPollRef.current = null }
+    setImportingId(null)
   }
 
   const handleSave = async () => {
@@ -153,7 +165,7 @@ export default function BarbargAccountsPage() {
       const res = await fetch(`/api/barbarg-accounts/test-login?accountId=${accountId}`)
       const data: LoginSession = await res.json()
       setLoginSession(data)
-      if (['login_success', 'login_failed', 'timeout', 'error', 'not_found'].includes(data.status)) {
+      if (['login_success', 'login_failed', 'cancelled', 'error', 'not_found'].includes(data.status)) {
         if (loginPollRef.current) { clearInterval(loginPollRef.current); loginPollRef.current = null }
         fetchAccounts(); fetchStats()
       }
@@ -198,7 +210,7 @@ export default function BarbargAccountsPage() {
   }
 
   useEffect(() => {
-    return () => { if (loginPollRef.current) clearInterval(loginPollRef.current) }
+    return () => { if (loginPollRef.current) clearInterval(loginPollRef.current); if (importPollRef.current) clearInterval(importPollRef.current) }
   }, [])
 
   const openCreate = () => { setEditItem(null); setForm({ accountName: '', username: '', password: '', confirmPassword: '', company: '', status: 'active', notes: '' }); setShowPassword(false); setDialogOpen(true) }
@@ -213,7 +225,7 @@ export default function BarbargAccountsPage() {
     waiting_captcha: { label: 'منتظر ورود کاربر', color: 'text-yellow-500', icon: Loader2 },
     login_success: { label: 'ورود موفق', color: 'text-green-500', icon: CheckCircle },
     login_failed: { label: 'ورود ناموفق', color: 'text-red-500', icon: XCircle },
-    timeout: { label: 'زمان تمام شد', color: 'text-orange-500', icon: XCircle },
+    cancelled: { label: 'متوقف شد', color: 'text-orange-500', icon: XCircle },
     error: { label: 'خطا', color: 'text-red-500', icon: XCircle },
     not_found: { label: 'یافت نشد', color: 'text-gray-500', icon: XCircle },
   }
@@ -322,6 +334,71 @@ export default function BarbargAccountsPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={importDialogOpen} onOpenChange={(open) => { if (!open && importingId) handleCancelImport(); else setImportDialogOpen(open) }}>
+        <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Download className="size-5" />
+              دریافت اطلاعات از سامانه — {importAccountName}
+            </DialogTitle>
+          </DialogHeader>
+
+          {importSession && (
+            <div className="space-y-4 overflow-y-auto flex-1 pt-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {importSession.status === 'running' ? <Loader2 className="size-5 text-yellow-500 animate-spin" />
+                    : importSession.status === 'success' ? <CheckCircle className="size-5 text-green-500" />
+                    : <XCircle className="size-5 text-red-500" />}
+                  <span className={`font-medium ${importSession.status === 'success' ? 'text-green-500' : importSession.status === 'running' ? 'text-yellow-500' : 'text-red-500'}`}>
+                    {importSession.status === 'running' && `در حال اجرا${importSession.attempt ? ` — تلاش ${importSession.attempt}` : ''}`}
+                    {importSession.status === 'success' && 'موفق'}
+                    {importSession.status === 'failed' && 'ناموفق'}
+                    {importSession.status === 'cancelled' && 'متوقف شد'}
+                    {importSession.status === 'not_found' && 'یافت نشد'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Clock className="size-3" />
+                  <span>{Math.floor((importSession.elapsed || 0) / 60)}:{String((importSession.elapsed || 0) % 60).padStart(2, '0')}</span>
+                </div>
+              </div>
+
+              <div className="rounded-lg border bg-muted/30 p-4 max-h-[360px] overflow-y-auto" dir="ltr">
+                <div className="space-y-1 font-mono text-xs">
+                  {(importSession.logs || []).map((line, i) => (
+                    <div key={i} className="py-0.5 text-foreground">{line}</div>
+                  ))}
+                  {importSession.status === 'running' && (
+                    <div className="flex items-center gap-2 py-0.5 text-yellow-500">
+                      <Loader2 className="size-3 animate-spin" />
+                      <span>تلاش‌ها ادامه دارد؛ در خطاهای موقتی مثل بلاک IP یا مشغولی سایت، ربات صبر می‌کند و دوباره شروع می‌کند...</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {importSession.error && (
+                <div className="rounded-lg bg-destructive/5 border border-destructive/20 p-3 text-sm text-destructive">
+                  <span className="font-medium">پیام:</span> {importSession.error}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2 border-t">
+            {importSession?.status === 'running' && (
+              <Button variant="destructive" onClick={handleCancelImport}>
+                توقف عملیات
+              </Button>
+            )}
+            <Button variant="outline" onClick={() => { if (importSession?.status === 'running') handleCancelImport(); else setImportDialogOpen(false) }}>
+              {importSession?.status === 'running' ? 'بستن و توقف' : 'بستن'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={loginDialogOpen} onOpenChange={(open) => { if (!open) handleCancelLogin() }}>
         <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
           <DialogHeader>
@@ -382,7 +459,7 @@ export default function BarbargAccountsPage() {
                 </div>
               )}
 
-              {(loginSession.status === 'login_failed' || loginSession.status === 'timeout' || loginSession.status === 'error') && (
+              {(loginSession.status === 'login_failed' || loginSession.status === 'cancelled' || loginSession.status === 'error') && (
                 <div className="rounded-lg bg-red-500/5 border border-red-500/20 p-3 text-sm text-red-600 dark:text-red-400 flex items-center gap-2">
                   <XCircle className="size-4" /> {loginSession.error || 'ورود ناموفق بود'}
                 </div>
@@ -397,7 +474,7 @@ export default function BarbargAccountsPage() {
               </Button>
             )}
             <Button variant="outline" onClick={handleCancelLogin}>
-              {['login_success', 'login_failed', 'timeout', 'error', 'not_found'].includes(loginSession?.status || '') ? 'بستن' : 'لغو'}
+              {['login_success', 'login_failed', 'cancelled', 'error', 'not_found'].includes(loginSession?.status || '') ? 'بستن' : 'توقف'}
             </Button>
           </div>
         </DialogContent>

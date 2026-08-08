@@ -34,21 +34,201 @@ function decryptPassword(encrypted: string): string {
   return out
 }
 
+
+type ImportStatus = 'running' | 'success' | 'failed' | 'cancelled'
+interface ImportSession {
+  accountId: string
+  status: ImportStatus
+  logs: string[]
+  error: string | null
+  data: any | null
+  profileId: string | null
+  startedAt: number
+  updatedAt: number
+  stopRequested: boolean
+  attempt: number
+}
+const importSessions = new Map<string, ImportSession>()
+const FINISHED_KEEP_MS = 30 * 60 * 1000
+
+function pushImportLog(s: ImportSession, line: string) {
+  const t = String(line || '').trim()
+  if (!t) return
+  s.logs.push(`${new Date().toLocaleTimeString('fa-IR')}  ${t.slice(0, 500)}`)
+  if (s.logs.length > 500) s.logs.splice(0, s.logs.length - 500)
+  s.updatedAt = Date.now()
+}
+function finishImportSession(s: ImportSession, status: ImportStatus, error?: string) {
+  s.status = status
+  if (error) s.error = error
+  s.updatedAt = Date.now()
+  setTimeout(() => importSessions.delete(s.accountId), FINISHED_KEEP_MS).unref?.()
+}
+const RETRYABLE_IMPORT_KINDS = new Set(['block', 'busy', 'timeout', 'waf', 'dead', 'login', 'error'])
+function importWaitMs(kind?: string) {
+  if (kind === 'block' || kind === 'waf') return 3 * 60 * 1000 + Math.random() * 2 * 60 * 1000
+  if (kind === 'busy' || kind === 'timeout') return 2 * 60 * 1000 + Math.random() * 3 * 60 * 1000
+  return 15 * 1000
+}
+async function sleepAbortable(ms: number, s: ImportSession) {
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    if (s.stopRequested) throw new Error('توسط کاربر متوقف شد')
+    await new Promise((r) => setTimeout(r, Math.min(5000, until - Date.now())))
+  }
+}
+
+async function createProfileFromImportResult(account: any, d: any, result: any) {
+  const accNid = String(account.username || '').replace(/\D/g, '')
+  const profileName =
+    (d.driverName && String(d.driverName).trim()) ||
+    (d.plateNumber && `پروفایل ${d.plateNumber}`) ||
+    d.name ||
+    `وارد‌شده از ${account.accountName}`
+
+  return prisma.registrationProfile.create({
+    data: {
+      name: profileName,
+      status: 'active',
+      senderType: 'حقیقی',
+      senderFirstName: d.senderFirstName || '',
+      senderLastName: d.senderLastName || '',
+      senderMobile: '',
+      senderNationalId: accNid,
+      receiverType: 'حقیقی',
+      receiverFirstName: d.receiverFirstName || '',
+      receiverLastName: d.receiverLastName || '',
+      receiverMobile: '',
+      receiverNationalId: accNid,
+      plateNumber: d.plateNumber || '',
+      driverName: d.driverName || '',
+      driverNationalId: d.driverNationalId || accNid,
+      cargoName: d.cargoName || '',
+      cargoPackaging: d.cargoPackaging || null,
+      cargoQuantity: d.cargoQuantity || null,
+      cargoWeight: d.cargoWeight || null,
+      cargoValue: d.cargoValue || null,
+      insuranceAmount: d.insuranceAmount || null,
+      originProvince: d.originProvince || '',
+      originCity: d.originCity || '',
+      originAddress: d.originAddress || null,
+      destProvince: d.destProvince || '',
+      destCity: d.destCity || '',
+      destAddress: d.destAddress || null,
+      notes: d.trackingCode ? `به‌صورت خودکار از بارنامه ${d.trackingCode} وارد شد` : 'به‌صورت خودکار وارد شد',
+      barbargAccount: { connect: { id: account.id } },
+    },
+  })
+}
+
 export async function POST(request: NextRequest) {
   const guard = await requirePermission(request, 'create_waybill')
   if (!guard.ok) return guard.response
 
   try {
     const body = await request.json()
-    const { accountId, createProfile = false } = body
+    const { accountId, createProfile = false, async: asyncMode = false, action } = body
 
     if (!accountId) {
       return NextResponse.json({ error: 'شناسه حساب الزامی است' }, { status: 400 })
     }
 
+    if (action === 'cancel') {
+      const s = importSessions.get(accountId)
+      if (s && s.status === 'running') {
+        s.stopRequested = true
+        pushImportLog(s, 'درخواست توقف توسط کاربر ثبت شد؛ بعد از پایان مرحله جاری متوقف می‌شود')
+      }
+      return NextResponse.json({ success: true })
+    }
+
     const account = await prisma.barBargAccount.findUnique({ where: { id: accountId } })
     if (!account) {
       return NextResponse.json({ error: 'حساب یافت نشد' }, { status: 404 })
+    }
+
+    if (asyncMode) {
+      const existing = importSessions.get(accountId)
+      if (existing && existing.status === 'running') {
+        return NextResponse.json({ success: true, sessionId: accountId, status: existing.status, logs: existing.logs })
+      }
+
+      const session: ImportSession = {
+        accountId, status: 'running', logs: [], error: null, data: null, profileId: null,
+        startedAt: Date.now(), updatedAt: Date.now(), stopRequested: false, attempt: 0,
+      }
+      importSessions.set(accountId, session)
+      pushImportLog(session, `شروع دریافت اطلاعات برای حساب «${account.accountName}»؛ تا زمان توقف کاربر ادامه می‌دهد`)
+
+      ;(async () => {
+        const eng = await getEngine()
+        while (!session.stopRequested) {
+          session.attempt += 1
+          pushImportLog(session, `تلاش ${session.attempt}: ورود به سامانه و خواندن آخرین بارنامه...`)
+          try {
+            const result = await eng.importLastBarname({
+              credentials: { username: account.username, password: decryptPassword(account.passwordEncrypted) },
+              headless: process.env.BARBARG_HEADLESS === 'true',
+              fast: true,
+              onLog: (line: string) => pushImportLog(session, line),
+            })
+
+            if (session.stopRequested) break
+
+            if (result.success) {
+              await prisma.barBargAccount.update({ where: { id: account.id }, data: { lastLogin: new Date(), lastError: null } }).catch(() => {})
+              const d = result.data
+              const nid = String(account.username || '').replace(/\D/g, '')
+              if (nid) {
+                if (!d.driverNationalId) d.driverNationalId = nid
+                if (!d.senderNationalId) d.senderNationalId = nid
+                if (!d.receiverNationalId) d.receiverNationalId = nid
+              }
+              if (d.driverName && String(d.driverName).trim()) d.name = String(d.driverName).trim()
+              session.data = d
+
+              if (createProfile) {
+                const profile = await createProfileFromImportResult(account, d, result)
+                session.profileId = profile.id
+                await prisma.notification.create({
+                  data: { title: 'پروفایل خودکار ساخته شد', message: `از آخرین بارنامه‌ی حساب «${account.accountName}» پروفایل «${profile.name}» ساخته شد.`, type: 'success' },
+                }).catch(() => {})
+              }
+              pushImportLog(session, 'دریافت اطلاعات با موفقیت انجام شد')
+              finishImportSession(session, 'success')
+              return
+            }
+
+            const kind = String(result.kind || 'error')
+            const err = String(result.error || 'خطای نامشخص')
+            pushImportLog(session, `خطا (${kind}): ${err}`)
+            await prisma.barBargAccount.update({ where: { id: account.id }, data: { lastError: err } }).catch(() => {})
+
+            if (kind === 'bad_credentials' || kind === 'account_locked' || kind === 'no_history') {
+              if (kind === 'bad_credentials' || kind === 'account_locked') {
+                await prisma.barBargAccount.update({ where: { id: account.id }, data: { status: 'inactive', lastError: err } }).catch(() => {})
+              }
+              finishImportSession(session, 'failed', err)
+              return
+            }
+
+            const wait = importWaitMs(kind)
+            pushImportLog(session, `خطا قابل تلاش مجدد است؛ ${Math.round(wait / 1000)} ثانیه صبر می‌کنم و دوباره از صفر شروع می‌کنم`)
+            await sleepAbortable(wait, session)
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : 'خطای غیرمنتظره'
+            if (session.stopRequested || /توسط کاربر متوقف/.test(msg)) break
+            pushImportLog(session, `خطای غیرمنتظره: ${msg}`)
+            await sleepAbortable(15000, session)
+          }
+        }
+        pushImportLog(session, 'عملیات توسط کاربر متوقف شد')
+        finishImportSession(session, 'cancelled', 'توسط کاربر متوقف شد')
+      })().catch((e) => {
+        finishImportSession(session, 'failed', e instanceof Error ? e.message : 'خطای غیرمنتظره')
+      })
+
+      return NextResponse.json({ success: true, sessionId: accountId, status: session.status, logs: session.logs })
     }
 
     const eng = await getEngine()
@@ -60,6 +240,7 @@ export async function POST(request: NextRequest) {
         password: decryptPassword(account.passwordEncrypted),
       },
       headless: process.env.BARBARG_HEADLESS === 'true',
+      fast: true,
       onLog: (line: string) => {
         const t = String(line).trim()
         if (t) logs.push(t.slice(0, 300))
@@ -202,4 +383,26 @@ export async function POST(request: NextRequest) {
       { status: 500 },
     )
   }
+}
+
+
+export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'create_waybill')
+  if (!guard.ok) return guard.response
+
+  const { searchParams } = new URL(request.url)
+  const accountId = searchParams.get('accountId')
+  if (!accountId) return NextResponse.json({ error: 'accountId الزامی است' }, { status: 400 })
+  const s = importSessions.get(accountId)
+  if (!s) return NextResponse.json({ status: 'not_found', logs: [] })
+  return NextResponse.json({
+    status: s.status,
+    logs: s.logs,
+    error: s.error,
+    data: s.data,
+    profileId: s.profileId,
+    attempt: s.attempt,
+    elapsed: Math.floor((Date.now() - s.startedAt) / 1000),
+    updatedAt: new Date(s.updatedAt).toISOString(),
+  })
 }

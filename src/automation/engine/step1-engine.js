@@ -1964,6 +1964,29 @@ function classifyCredentialError(raw) {
   return null
 }
 
+
+
+async function isLoggedInByUserMenu(page) {
+  return page.evaluate(() => {
+    const clean = (t) => String(t || '').replace(/[\u200c\s]+/g, ' ').trim()
+    const url = location.href
+    const onNotification = /\/Barname\/Notification\/Notification/i.test(url)
+    const onLogin = /\/Account\/Login/i.test(url)
+    const hasLoginForm = !!document.querySelector('#NationalCode, #user-password, #inter')
+    if (onLogin || hasLoginForm) return false
+
+    const names = Array.from(document.querySelectorAll('span.user-name, small.user-name'))
+      .map((el) => clean(el.textContent))
+      .filter((t) => t && t.length >= 3 && !/خوش آمدید|نام کاربر|خروج|ورود/.test(t))
+    const hasWelcome = Array.from(document.querySelectorAll('.user-status, small.user-status'))
+      .some((el) => /خوش آمدید/.test(el.textContent || ''))
+
+    // شرط اصلی کاربر: صفحه Notification کامل لود شده و منوی کاربر آمده باشد.
+    // برای مسیرهای مشابه بعد از لاگین هم اگر همین منوی کاربر موجود باشد، موفق حساب می‌شود.
+    return names.length > 0 && (hasWelcome || onNotification)
+  }).catch(() => false)
+}
+
 async function waitLoginResult(page, maxMs = 45000) {
   const t0 = Date.now()
   let lastLog = 0
@@ -2007,37 +2030,18 @@ async function waitLoginResult(page, maxMs = 45000) {
       }
     }
 
-    // ۱) از صفحه‌ی ورود خارج شدیم؟  (مهم‌ترین نشانه‌ی موفقیت)
+    // ۱) شرط قطعی ورود: صفحه بعد از لاگین کامل لود شده و منوی کاربر/خوش‌آمدید آمده باشد.
+    // نمونه‌ی مورد انتظار سایت: /Barname/Notification/Notification + span.user-name + user-status=خوش آمدید
     let url = ''
     try { url = page.url() } catch { /* در حال ناوبری */ }
     if (url && !url.includes('Login')) {
       await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
-
-      /* گاهی سایت لحظه‌ای از /Login خارج می‌شود و دوباره برمی‌گردد.
-         مطمئن شو واقعا وارد شده‌ایم، نه اینکه فقط در حال ریدایرکت باشیم. */
-      const back = await page.evaluate(() => {
-        const u = location.href
-        const hasLogin = !!document.querySelector('#NationalCode, #user-password, #inter')
-        return /\/Account\/Login/i.test(u) || hasLogin
-      }).catch(() => false)
-
-      if (!back) {
+      if (await isLoggedInByUserMenu(page)) {
         return { ok: true, waited: Math.round((Date.now() - t0) / 1000), transient }
       }
-      // برگشتیم به صفحه‌ی ورود ⇒ وارد نشدیم؛ حلقه ادامه می‌دهد
     }
 
-    // ۲) نشانه‌ی دوم موفقیت: فرم ورود از صفحه رفته یا فرم بارنامه آمده
-    const gone = await page.evaluate(() => {
-      const hasLogin = !!document.querySelector('#NationalCode, #user-password, #inter')
-      const hasApp = !!document.querySelector('#senderSelectType, #btnAddLoad, .navbar, #layout-menu')
-      return !hasLogin && hasApp
-    }).catch(() => false)
-    if (gone) {
-      return { ok: true, waited: Math.round((Date.now() - t0) / 1000), transient }
-    }
-
-    // ۳) پیام خطا
+    // ۲) پیام خطا
     const err = await page.evaluate(() => {
       const sels = ['.swal2-html-container', '.alert-danger', '.text-danger',
                     '.validation-summary-errors', '[role="alert"]', '.toast-error']
@@ -2149,8 +2153,39 @@ async function waitForSwalError(page, ms = 3000) {
    تشخیص وضعیت سلامت — «چه بلایی سر ما آمد؟»
    ═══════════════════════════════════════════════════════════════════ */
 
+
+
+const GENERAL_NETWORK_CHECK_URLS = (process.env.NETWORK_CHECK_URLS || '')
+  .split(',')
+  .map((x) => x.trim())
+  .filter(Boolean)
+const DEFAULT_GENERAL_NETWORK_CHECK_URLS = [
+  'https://www.gstatic.com/generate_204',
+  'https://www.cloudflare.com/cdn-cgi/trace',
+  'https://www.msftconnecttest.com/connecttest.txt',
+]
+async function isGeneralInternetOnline(timeoutMs = 5000) {
+  const urls = GENERAL_NETWORK_CHECK_URLS.length ? GENERAL_NETWORK_CHECK_URLS : DEFAULT_GENERAL_NETWORK_CHECK_URLS
+  for (const url of urls) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const res = await fetch(url, { cache: 'no-store', signal: controller.signal, headers: { 'User-Agent': 'barbarg-bot-network-check' } })
+      clearTimeout(timer)
+      if (res.status > 0 && res.status < 500) return true
+    } catch (e) {
+      clearTimeout(timer)
+    }
+  }
+  return false
+}
+async function assertGeneralInternet(stage = 'شروع عملیات') {
+  const ok = await isGeneralInternetOnline(5000)
+  if (!ok) throw new Error(`INTERNET_DISCONNECTED: اتصال اینترنت قبل از «${stage}» برقرار نیست`)
+}
+
 /** خطاهای شبکه‌ای که یعنی IP بلاک شده یا اتصال قطع است */
-const NET_BLOCK_RE = /ERR_CONNECTION_CLOSED|ERR_CONNECTION_RESET|ERR_EMPTY_RESPONSE|ERR_CONNECTION_REFUSED|ERR_CONNECTION_TIMED_OUT|ERR_TIMED_OUT|ERR_NETWORK_CHANGED|ERR_SOCKET_NOT_CONNECTED|ERR_ADDRESS_UNREACHABLE|ERR_TUNNEL_CONNECTION_FAILED|ERR_NAME_NOT_RESOLVED|net::ERR_/i
+const NET_BLOCK_RE = /INTERNET_DISCONNECTED|اتصال اینترنت|اینترنت قطع|ERR_CONNECTION_CLOSED|ERR_CONNECTION_RESET|ERR_EMPTY_RESPONSE|ERR_CONNECTION_REFUSED|ERR_CONNECTION_TIMED_OUT|ERR_TIMED_OUT|ERR_NETWORK_CHANGED|ERR_SOCKET_NOT_CONNECTED|ERR_ADDRESS_UNREACHABLE|ERR_TUNNEL_CONNECTION_FAILED|ERR_NAME_NOT_RESOLVED|net::ERR_/i
 
 /** صفحه/مرورگر مرده است */
 const PAGE_DEAD_RE = /Target page, context or browser has been closed|Target closed|browser has been closed|Session closed|Protocol error/i
@@ -2350,6 +2385,8 @@ async function captureLocationFromMapStep(page, kind, opts = {}) {
   return new Promise((resolve, reject) => {
     let settleTimer = null
     let healthTimer = null
+    let lastNetworkCheck = 0
+    let checkingNetwork = false
     let finished = false
     const context = page.context ? page.context() : null
     const browser = context && context.browser ? context.browser() : null
@@ -2394,6 +2431,22 @@ async function captureLocationFromMapStep(page, kind, opts = {}) {
       try {
         if (page.isClosed && page.isClosed()) fail(new Error(`مرورگر هنگام انتخاب ${cfg.label} بسته شد`))
         else if (browser && !browser.isConnected()) fail(new Error(`مرورگر هنگام انتخاب ${cfg.label} قطع/بسته شد`))
+
+        if (!finished && Date.now() - lastNetworkCheck > 5000 && !checkingNetwork) {
+          lastNetworkCheck = Date.now()
+          checkingNetwork = true
+          page.request.get(LOGIN_URL, { timeout: 5000 })
+            .then((res) => {
+              checkingNetwork = false
+              if (!finished && (!res || res.status() >= 500)) {
+                fail(new Error(`INTERNET_DISCONNECTED: اتصال اینترنت یا سامانه هنگام انتخاب ${cfg.label} قطع شد`))
+              }
+            })
+            .catch(() => {
+              checkingNetwork = false
+              if (!finished) fail(new Error(`INTERNET_DISCONNECTED: اتصال اینترنت هنگام انتخاب ${cfg.label} قطع شد`))
+            })
+        }
       } catch (e) {
         fail(new Error(`مرورگر هنگام انتخاب ${cfg.label} بسته شد`))
       }
@@ -2641,6 +2694,9 @@ async function runWaybillOnce(opts) {
     if (closeBrowser) await browser.close().catch(() => {})
     return { success: false, error, kind, steps: [], trackingCode: null }
   }
+
+  try { await assertGeneralInternet('شروع اتوماسیون') }
+  catch (e) { return fail(String((e && e.message) || e), 'block') }
 
   console.log(`حساب: ${credentials.username}`)
   console.log('\n→ ورود به سامانه...')
@@ -3552,6 +3608,9 @@ async function scrapeBarnameDetail(page) {
  */
 async function importLastBarname(opts) {
   const { credentials, headless = false, onLog = null } = opts
+  // سرعت دریافت اطلاعات از آخرین بارنامه: پیش‌فرض جدید مثل تب اتوماسیون سریع است.
+  // اگر روزی خواستی حالت خیلی آرام قبلی را برگردانی، fast:false پاس بده.
+  const fast = opts.fast !== false
   if (onLog) setLogSink(onLog)
   if (!fs.existsSync(OUT)) fs.mkdirSync(OUT, { recursive: true })
 
@@ -3565,7 +3624,44 @@ async function importLastBarname(opts) {
   const ctx = await browser.newContext({ viewport: null, locale: 'fa-IR', timezoneId: 'Asia/Tehran' })
   const page = await ctx.newPage()
 
+  const iPause = (min, max) => fast ? page.waitForTimeout(Math.max(80, Math.min(350, Math.floor((min + max) / 14)))) : humanPause(min, max)
+  const iShort = () => fast ? page.waitForTimeout(120) : shortPause()
+  const iMedium = () => fast ? page.waitForTimeout(250) : mediumPause()
+  const iLong = () => fast ? page.waitForTimeout(100) : longPause()
+  const iSettle = async (label = '') => {
+    if (!fast) return settlePage(page, label)
+    await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {})
+    for (let i = 0; i < 6; i++) {
+      const busy = await page.evaluate(() => {
+        const l = document.getElementById('loading')
+        if (l && l.offsetParent !== null) return true
+        return !!document.querySelector('.blockUI, .loading-overlay, .page-loader')
+      }).catch(() => false)
+      if (!busy) break
+      await page.waitForTimeout(150)
+    }
+    await page.evaluate(() => {
+      document.getElementById('loading')?.remove()
+      document.querySelectorAll('.blockUI, .loading-overlay, .page-loader').forEach((e) => e.remove())
+    }).catch(() => {})
+    if (label) console.log(`   ⏩ ${label} آماده شد`)
+  }
+  const iType = async (sel, txt) => {
+    if (!fast) return humanType(page, sel, txt)
+    const el = await page.$(sel)
+    if (!el) return false
+    await el.click({ clickCount: 3 }).catch(() => {})
+    await el.fill(String(txt || '')).catch(async () => { await el.type(String(txt || ''), { delay: 5 }).catch(() => {}) })
+    return true
+  }
+  const iClick = async (sel) => fast
+    ? !!(await page.$(sel).then(async (el) => { if (!el) return false; await el.click().catch(() => {}); return true }).catch(() => false))
+    : humanClick(page, sel)
+
   const done = async (r) => { await browser.close().catch(() => {}); return r }
+
+  try { await assertGeneralInternet('دریافت اطلاعات آخرین بارنامه') }
+  catch (e) { return done({ success: false, error: String((e && e.message) || e), kind: 'block' }) }
 
   try {
     console.log(`حساب: ${credentials.username}`)
@@ -3578,17 +3674,17 @@ async function importLastBarname(opts) {
     if (nav === 'TIMEOUT' || !nav) {
       return done({ success: false, error: 'اتصال به سایت برقرار نشد', kind: 'block' })
     }
-    await settlePage(page, 'صفحه‌ی ورود')
+    await iSettle( 'صفحه‌ی ورود')
 
     if (await isServerBusy(page)) {
       const m = await readBusyMessage(page)
       return done({ success: false, error: 'سرور مشغول است: ' + m, kind: 'busy' })
     }
 
-    await humanType(page, '#NationalCode', credentials.username)
-    await shortPause()
-    await humanType(page, '#user-password', credentials.password)
-    await shortPause()
+    await iType( '#NationalCode', credentials.username)
+    await iShort()
+    await iType( '#user-password', credentials.password)
+    await iShort()
 
     // ── حل کپچا و ورود ──
     let logged = false
@@ -3600,48 +3696,48 @@ async function importLastBarname(opts) {
       if (t.error) {
         console.log(`   ✖ کپچا: ${t.error} → رفرش`)
         await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
-        await settlePage(page)
-        await humanType(page, '#NationalCode', credentials.username)
-        await shortPause()
-        await humanType(page, '#user-password', credentials.password)
+        await iSettle()
+        await iType( '#NationalCode', credentials.username)
+        await iShort()
+        await iType( '#user-password', credentials.password)
         continue
       }
       const ans = solveMath(t.expr)
       const minS = Math.min(...t.symbols.map((x) => x.score))
       console.log(`   ◈ کپچا: ${t.expr} ⇒ ${ans} (${(minS * 100).toFixed(0)}%)`)
       if (ans === null || minS < 0.42) {
-        await humanClick(page, '#dntCaptchaRefreshButton')
-        await humanPause(1800, 3200)
+        await iClick( '#dntCaptchaRefreshButton')
+        await iPause(1800, 3200)
         continue
       }
-      await humanType(page, '#DNTCaptchaInputText', ans)
-      await mediumPause()
-      await humanClick(page, '#inter')
+      await iType( '#DNTCaptchaInputText', ans)
+      await iMedium()
+      await iClick( '#inter')
 
       const res = await waitLoginResult(page, 45000)
       if (res.ok) { logged = true; console.log(`   ✅ ورود موفق (${res.waited}s)`); break }
       lastErr = res.error || lastErr
       if (res.credentialKind) { credKind = res.credentialKind; console.log(`   🛑 ${res.error}`); break }
       console.log(`   ✖ ورود نشد — ${String(res.error || '').slice(0, 80)}`)
-      await humanPause(2000, 4000)
-      await humanClick(page, '#dntCaptchaRefreshButton')
-      await humanType(page, '#NationalCode', credentials.username)
-      await shortPause()
-      await humanType(page, '#user-password', credentials.password)
+      await iPause(2000, 4000)
+      await iClick( '#dntCaptchaRefreshButton')
+      await iType( '#NationalCode', credentials.username)
+      await iShort()
+      await iType( '#user-password', credentials.password)
     }
 
     if (!logged) return done({ success: false, error: lastErr, kind: credKind || 'error' })
 
     /* نام دارنده‌ی حساب را همین‌جا از نوار بالا بردار —
        قبل از رفتن به تاریخچه، تا حتی اگر تاریخچه خالی بود هم داشته باشیمش. */
-    await settlePage(page, 'صفحه‌ی اصلی')
+    await iSettle( 'صفحه‌ی اصلی')
     const headerName = await readLoggedInUserName(page)
     if (headerName) console.log(`   نام دارنده‌ی حساب: ${headerName}`)
-    await mediumPause()
+    await iMedium()
 
     // ── صفحه‌ی تاریخچه ──
     console.log('\n→ باز کردن تاریخچه‌ی بارنامه‌ها...')
-    await longPause()   // انسان بلافاصله صفحه عوض نمی‌کند
+    await iLong()   // انسان بلافاصله صفحه عوض نمی‌کند
     const navHist = await gotoR(page, HISTORY_URL, 'تاریخچه')
     if (navHist === 'BLOCKED') {
       return done({ success: false, error: 'IP بلاک شد هنگام باز کردن تاریخچه', kind: 'block' })
@@ -3649,7 +3745,7 @@ async function importLastBarname(opts) {
     if (!navHist) {
       return done({ success: false, error: 'صفحه‌ی تاریخچه باز نشد', kind: 'block' })
     }
-    await settlePage(page, 'صفحه‌ی تاریخچه')
+    await iSettle( 'صفحه‌ی تاریخچه')
 
     // دکمه‌ی «جزئیات» — ممکن است با AJAX دیر بیاید
     let hasBtn = false
@@ -3677,7 +3773,7 @@ async function importLastBarname(opts) {
        مقصد در ویژگی title سلول‌هاست — جایی که استان و شهر هم جدا آمده‌اند:
            «کرمان، سیرجان، خیابان ابن سینا-سیرجان-کرمان»
        صفحه‌ی جزئیات فقط متن فشرده دارد، پس جدول دقیق‌تر است. */
-    await mediumPause()   // فرصت به DataTables برای رندر کامل
+    await iMedium()   // فرصت به DataTables برای رندر کامل
     const historyRows = await scrapeHistoryTable(page)
     if (historyRows.length) {
       console.log(`   ✔ ${historyRows.length} بارنامه در جدول تاریخچه`)
@@ -3688,9 +3784,9 @@ async function importLastBarname(opts) {
     }
 
     console.log('   ✔ دکمه «جزئیات» پیدا شد')
-    await mediumPause()
+    await iMedium()
     console.log('   → کلیک روی جزئیات...')
-    if (!await humanClick(page, '#btnDetailfirst')) {
+    if (!await iClick( '#btnDetailfirst')) {
       await page.evaluate(() => {
         const b = document.querySelector('#btnDetailfirst, button[name="btnDetailfirst"]')
         if (b) b.click()
@@ -3712,10 +3808,10 @@ async function importLastBarname(opts) {
       return done({ success: false, error: 'صفحه‌ی جزئیات بارنامه باز نشد', kind: 'error' })
     }
 
-    await settlePage(page, 'صفحه‌ی جزئیات')
+    await iSettle( 'صفحه‌ی جزئیات')
     console.log(`   ✔ صفحه‌ی جزئیات باز شد: ${page.url()}`)
 
-    await mediumPause()
+    await iMedium()
     const raw = await scrapeBarnameDetail(page)
     if (!raw) return done({ success: false, error: 'خواندن اطلاعات بارنامه ناموفق بود', kind: 'error' })
 
@@ -3995,7 +4091,7 @@ async function runProfileMapCapture(opts) {
 
 module.exports = {
   runWaybill, runWaybillOnce, importLastBarname, scrapeBarnameDetail,
-  readLoggedInUserName, scrapeHistoryTable,
+  readLoggedInUserName, isLoggedInByUserMenu, scrapeHistoryTable,
   humanPause, humanType, humanClick, settlePage,
   parsePlateFromHistory, parseHistoryLocation,
   provinceFromPlate, select2Pick, IRAN_CODE_TO_PROVINCE,

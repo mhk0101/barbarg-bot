@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { Header } from '@/components/layout/Header'
+import { NetworkMonitor } from '@/components/layout/NetworkMonitor'
 import { cn } from '@/lib/utils'
 
 export function PanelLayout({ children }: { children: React.ReactNode }) {
@@ -13,6 +14,7 @@ export function PanelLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background">
+      <NetworkMonitor />
       <Sidebar
         collapsed={collapsed}
         onToggle={toggleSidebar}
