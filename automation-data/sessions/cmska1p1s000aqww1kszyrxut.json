@@ -1,0 +1,45 @@
+{
+  "cookies": [
+    {
+      "name": ".Aggregation.Session",
+      "value": "CfDJ8KBWEQqNptJDjpWS%2FV%2FNxMNiYLuLR8%2F37eKrN%2Bfty0UXZMHBHtsrTUfgi46m7NPIDeiDbOoUqZZzYvxGWKX0b15hCkHh6%2FisWJEKAWBaRPwHsvbtIFJd%2BR1kRVAKcC%2FL4OgtM8ou%2FkyGwVIcbkN0wGLoAJuSvhYWuNUyDtL7EyYg",
+      "domain": "barname.utcms.ir",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "cookiesession1",
+      "value": "678B291BF69CF902C99E77312941C388",
+      "domain": "barname.utcms.ir",
+      "path": "/",
+      "expires": 1817723732.919169,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "Barname",
+      "value": "CfDJ8KBWEQqNptJDjpWS_V_NxMPLmxSs-Bxwliuj1GWC3CK4oRC49hMAI96AKonDHd7GgjPmUMKy-wltPmhIjkkKbAj8JE5onxOILrOB6T6GAyafcqtZHLRPooPLi7YIUywgBp3IlUBTzZwjCJBlySCZ7c9B3GVcfK2BWOCN7CnCeocGpd2lTGsMrHerjAv7jlWRDPIo5LulzMB4aYHkOfLK3IoE0OlkgeTDRufyuSHgO2mMqLpdkVgKh-L-_oQeHU4j2DtlGYGZDL9b8OEsRCNDoOXPyQ4nie6vSS5KXGXeJ24oFjBFNWMJb4zA2gavJwGHg7tcKB-goykKrcSSNu7iguj9rlScTlX9lPj3NNlwqc42-SilGsb5aGsXt0T56GOwKz2fxAkFx4DM8Tc5RqmrmH4B9Abw_9RMoBGBKCen9eUw7p_6TeJ7EivEQbKLgZbMfQjuaaFdy1MXgKJR7xUpcw9lJ0jqgs0eyc0052g6Q7BZuUtIM7ruxz4t7gg8fx6tVnp6sVid9O76DCj_yhBs-Hjd9TDnC41thVH-6CsIIECSvwyXZsN5DZNzOJjQeqTAkRb6B9TGxvXP2qXXGWZwYGrLmg9yE4NNbPtPgSAx4YkyAhDPqINdwxQ8lZYPLbLlsFHrSt75DcEBXuNYVg5sdPd6BIxkgUI0-TQ0udntXxfetc5NthmAQdPHu8Y8wvsOEHwSiE-CYkJUAiY6hKUuDV6fKieccJBVK8-HiMX9O4kGG0IYl0Cd1U9MaNSFTkOVrtgYt0n9k4dpbmeepuQudfXTw7g-X8u3Gb4TkYdHYlqJWN_Wysyoy30Hckz8_KAH0GO4XBDq7YoTcJWfju0gNyvp3upc28NLx2oaL39tC82jeeGtlmvv--f64oD0GDt1gHw8az07b62VgrL3WeEa0ZJJBqcfivtnVHQhTXZjokEk780kuZ005id8ZguTIlbTYkkNdBMi816YZuTTKvVGoHhsHvEXyT58u-I8dAjD_smfVrkF9JAY-nCZ4YkQ6oJRV3Bu2YTZpOCHZOs-C5d5qGUmaEpciuMviZ8KD_lEFolOKVufvGVsUrsTQfOViaOcZjCfdgK7IfSpluJCMtJNu989b020lF-Lx3dm1zkQYIFRXZBpYD1FsgEsBD4j6ocxa7NXhH72EWXm1i_VW2iA9m8SsR4nOW5gAGDIdYwS1pzKYqvDe2NPoDb_Hrts1pFUjJo0Jtba4u1kNzH3CD5F3Tunnf1y6Z3-JuzPnERcjUsF7A4ipfAR3tEMM_vdkvIro4SCAm4P7XJ9tfAs_qSn8ltbYAxs5WuaP4S8LGYN3B_ab8ujoXZljGIFiPJFtTT-SqtPyAouIBa9ElFcqnPjfrEST1k8kaL7TZUOAkxNZ9_h1UuY6bWgYtit59qvBf4pBg",
+      "domain": "barname.utcms.ir",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "ApplicationToken",
+      "value": "CfDJ8KBWEQqNptJDjpWS_V_NxMN4c9r-OgsLMivtNb0UiZnBcyP_utuFCsNZy5IWl5qWo_KbPrMjmau14WkYMyNlB9rkr23uOoJU6HeJWwdyR_EooVtwUsd8B3R4PP7wMhiTisrFMDplcY4bIh1eurgC_WY",
+      "domain": "barname.utcms.ir",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Strict"
+    }
+  ],
+  "origins": []
+}

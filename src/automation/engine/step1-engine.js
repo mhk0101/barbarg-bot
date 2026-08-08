@@ -953,46 +953,45 @@ async function fillCargoStep(page, cargo, OUT, tag, verbose = true) {
    جدول رسمی راهنمایی و رانندگی — کد ایران به استان.
    ═══════════════════════════════════════════════════════════════════ */
 const IRAN_CODE_TO_PROVINCE = {
-  '10': 'خوزستان',    '11': 'مرکزی',      '12': 'خراسان رضوی', '13': 'اصفهان',
-  '14': 'خوزستان',    '15': 'آذربایجان شرقی', '16': 'گیلان',   '17': 'کرمان',
-  '18': 'خوزستان',    '19': 'فارس',       '20': 'خراسان رضوی', '21': 'تهران',
-  '22': 'تهران',      '23': 'مرکزی',      '24': 'همدان',       '25': 'اصفهان',
-  '26': 'قم',         '27': 'خراسان رضوی','28': 'گیلان',       '29': 'تهران',
-  '30': 'خوزستان',    '31': 'البرز',      '32': 'آذربایجان شرقی', '33': 'تهران',
-  '34': 'قزوین',      '35': 'سمنان',      '36': 'کرمانشاه',    '37': 'اردبیل',
-  '38': 'چهارمحال و بختیاری', '39': 'تهران', '40': 'خراسان رضوی',
-  '41': 'گیلان',      '42': 'لرستان',     '43': 'گیلان',       '44': 'مازندران',
-  '45': 'زنجان',      '46': 'مازندران',   '47': 'مازندران',    '48': 'گلستان',
-  '49': 'سیستان و بلوچستان', '51': 'خراسان رضوی', '52': 'همدان',
-  '53': 'آذربایجان شرقی', '54': 'خراسان شمالی', '55': 'مرکزی',
-  '56': 'سیستان و بلوچستان', '57': 'سیستان و بلوچستان', '58': 'آذربایجان غربی',
-  '59': 'خوزستان',    '61': 'خوزستان',    '62': 'مرکزی',       '63': 'خوزستان',
-  '64': 'لرستان',     '65': 'آذربایجان غربی', '66': 'کردستان',  '67': 'کرمانشاه',
-  '68': 'ایلام',      '69': 'مازندران',   '71': 'فارس',        '72': 'فارس',
-  '73': 'کهگیلویه و بویر احمد', '74': 'فارس', '75': 'بوشهر',
-  '76': 'کرمان',      '77': 'هرمزگان',    '78': 'کرمان',       '79': 'یزد',
-  '81': 'اصفهان',     '82': 'اصفهان',     '83': 'اصفهان',      '84': 'اصفهان',
-  '85': 'اصفهان',     '86': 'اصفهان',     '87': 'یزد',         '88': 'چهارمحال و بختیاری',
-  '89': 'یزد',        '91': 'خراسان رضوی','92': 'خراسان رضوی', '93': 'خراسان رضوی',
-  '94': 'خراسان جنوبی','95': 'خراسان رضوی','96': 'خراسان شمالی','97': 'خراسان رضوی',
-  '98': 'سیستان و بلوچستان', '99': 'خراسان رضوی',
+  // مبنا: تشخیص استان از عدد اول پلاک در قالب پنل/پروفایل.
+  '10': 'تهران', '11': 'تهران', '12': 'خراسان رضوی', '13': 'اصفهان',
+  '14': 'خوزستان', '15': 'آذربایجان شرقی', '16': 'قم', '17': 'آذربایجان غربی',
+  '18': 'همدان', '19': 'کرمانشاه', '20': 'تهران', '21': 'البرز',
+  '22': 'تهران', '23': 'اصفهان', '24': 'خوزستان', '25': 'آذربایجان شرقی',
+  '26': 'خراسان شمالی', '27': 'آذربایجان غربی', '28': 'همدان', '29': 'کرمانشاه',
+  '30': 'البرز', '31': 'لرستان', '32': 'خراسان رضوی', '33': 'تهران',
+  '34': 'خوزستان', '35': 'آذربایجان شرقی', '36': 'خراسان رضوی', '37': 'آذربایجان غربی',
+  '38': 'البرز', '39': 'کرمان', '40': 'تهران', '41': 'لرستان',
+  '42': 'خراسان رضوی', '43': 'اصفهان', '44': 'تهران', '45': 'کرمان',
+  '46': 'گیلان', '47': 'مرکزی', '48': 'بوشهر', '49': 'کهگیلویه و بویر احمد',
+  '51': 'کردستان', '52': 'خراسان جنوبی', '53': 'اصفهان', '54': 'یزد',
+  '55': 'تهران', '56': 'گیلان', '57': 'مرکزی', '58': 'بوشهر',
+  '59': 'گلستان', '61': 'کردستان', '62': 'مازندران', '63': 'فارس',
+  '64': 'یزد', '65': 'کرمان', '66': 'تهران', '67': 'اصفهان',
+  '68': 'البرز', '69': 'گلستان', '71': 'چهارمحال و بختیاری', '72': 'مازندران',
+  '73': 'فارس', '74': 'خراسان رضوی', '75': 'کرمان', '76': 'گیلان',
+  '77': 'تهران', '78': 'تهران', '79': 'قزوین', '81': 'چهارمحال و بختیاری',
+  '82': 'مازندران', '83': 'فارس', '84': 'هرمزگان', '85': 'سیستان و بلوچستان',
+  '86': 'سمنان', '87': 'زنجان', '88': 'تهران', '89': 'قزوین',
+  '91': 'اردبیل', '92': 'مازندران', '93': 'فارس', '94': 'هرمزگان',
+  '95': 'سیستان و بلوچستان', '96': 'سمنان', '97': 'زنجان', '98': 'ایلام',
+  '99': 'تهران',
 }
-
 /**
  * استان را از پلاک تشخیص می‌دهد.
  * ورودی می‌تواند رشته («۴۵ ع ۹۲۳ ۱۷») یا شیء تجزیه‌شده باشد.
  */
 function provinceFromPlate(plate) {
-  let iran = ''
+  let code = ''
   if (typeof plate === 'string') {
     const p = parsePlateText(plate)
-    iran = p.iran
+    code = p.twoDigit || p.iran || ''
   } else if (plate && typeof plate === 'object') {
-    iran = plate.iran || ''
+    code = plate.twoDigit || plate.two || plate.code || plate.iran || ''
   }
-  iran = toLatin(iran).replace(/\D/g, '')
-  if (!iran) return null
-  return IRAN_CODE_TO_PROVINCE[iran] || null
+  code = toLatin(code).replace(/\D/g, '')
+  if (!code) return null
+  return IRAN_CODE_TO_PROVINCE[code] || null
 }
 
 const PROVINCES = {
@@ -1836,10 +1835,33 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
 
   let code = ''
   let swalErr = ''
-  for (let i = 0; i < 40; i++) {
-    code = await page.evaluate(() =>
-      (document.getElementById('TrackingCodeNumber') || {}).value || '').catch(() => '')
-    if (code) break
+  let finalSuccess = null
+  for (let i = 0; i < 60; i++) {
+    const st = await page.evaluate(() => {
+      const code = (document.getElementById('TrackingCodeNumber') || {}).value || ''
+      const box = document.getElementById('trackingcode')
+      const text = (box ? box.innerText : document.body.innerText || '').replace(/\s+/g, ' ').trim()
+      const success = !!(
+        box &&
+        /سند حمل بار/.test(text) &&
+        /صادر گردید/.test(text) &&
+        document.getElementById('pelakFinal') &&
+        document.getElementById('OrginFinal') &&
+        document.getElementById('DestFinal')
+      )
+      return {
+        code: String(code || '').trim(),
+        success,
+        text: success ? text.slice(0, 500) : '',
+        plate: (document.getElementById('pelakFinal') || {}).textContent || '',
+        origin: (document.getElementById('OrginFinal') || {}).textContent || '',
+        dest: (document.getElementById('DestFinal') || {}).textContent || '',
+      }
+    }).catch(() => ({ code: '', success: false, text: '', plate: '', origin: '', dest: '' }))
+
+    code = st.code || ''
+    if (st.success) finalSuccess = st
+    if (code || finalSuccess) break
     swalErr = await readSwalError(page)
     if (swalErr) break
     await page.waitForTimeout(500)
@@ -1861,10 +1883,21 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
   if (code) {
     log(`\n   🎉 بارنامه ثبت شد — کد رهگیری: ${code}`)
     await page.screenshot({ path: path.join(OUT, `${tag}-receipt.png`), fullPage: true }).catch(() => {})
-    return code
+    return { success: true, trackingCode: code }
   }
 
-  log('   ✖ کد رهگیری دریافت نشد:')
+  if (finalSuccess) {
+    log('\n   🎉 بارنامه با موفقیت ثبت شد — صفحه «سند حمل صادر گردید» نمایش داده شد')
+    const plate = String(finalSuccess.plate || '').trim()
+    const origin = String(finalSuccess.origin || '').trim()
+    const dest = String(finalSuccess.dest || '').trim()
+    if (plate || origin || dest) log(`      ${plate ? `پلاک: ${plate}` : ''}${origin || dest ? ` | مسیر: ${origin || '—'} ← ${dest || '—'}` : ''}`)
+    log('      کد رهگیری در فیلد TrackingCodeNumber خوانده نشد، اما رسید نهایی سایت تایید شد.')
+    await page.screenshot({ path: path.join(OUT, `${tag}-receipt.png`), fullPage: true }).catch(() => {})
+    return { success: true, trackingCode: '', finalReceipt: true }
+  }
+
+  log('   ✖ نه کد رهگیری دریافت شد و نه صفحه رسید نهایی دیده شد:')
   const errs = await page.evaluate(() => {
     const o = []
     document.querySelectorAll('.alert-danger, small.help-block, .swal2-html-container').forEach(e => {
@@ -2198,6 +2231,350 @@ async function waitUntilSiteBack(page, maxMs) {
   return false
 }
 
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   انتخاب/اعمال موقعیت نقشه برای گام ۵ و ۶
+   - برای capture: کاربر روی نقشه واقعی سایت کلیک می‌کند و آخرین کلیک ملاک است.
+   - برای اجرای عادی: اگر پروفایل مختصات ذخیره‌شده داشته باشد، همان نقطه روی نقشه اعمال می‌شود.
+   ═══════════════════════════════════════════════════════════════════ */
+
+const MAP_JSON_START = '[map-location-json]'
+const MAP_JSON_END = '[/map-location-json]'
+const MANUAL_LOCATION_TAG = /\[manual-location\]/
+
+function parseProfileMapLocations(notes) {
+  const txt = String(notes || '')
+  const i = txt.indexOf(MAP_JSON_START)
+  const j = txt.indexOf(MAP_JSON_END)
+  if (i < 0 || j <= i) return null
+  const raw = txt.slice(i + MAP_JSON_START.length, j).trim()
+  try {
+    const obj = JSON.parse(raw)
+    const valid = (x) => x && Number.isFinite(+x.lat) && Number.isFinite(+x.lon)
+    return {
+      origin: valid(obj.origin) ? { ...obj.origin, lat: +obj.origin.lat, lon: +obj.origin.lon } : null,
+      destination: valid(obj.destination) ? { ...obj.destination, lat: +obj.destination.lat, lon: +obj.destination.lon } : null,
+      updatedAt: obj.updatedAt || null,
+    }
+  } catch (e) {
+    return null
+  }
+}
+
+function mapCfgFor(kind) {
+  if (kind === 'dest') {
+    return {
+      kind: 'dest', label: 'مقصد', paneId: 'pills-6', nextBtn: '#btnGoLVL7', nextPaneId: 'pills-7',
+      mapSelectors: ['#mapp-MapDestination', '#MapDestination', '#mapp-MapDest', '#MapDest', '#mapp-MapMaghsad', '#MapMaghsad', '#destMap', '#DestMap'],
+      addressIds: ['txtAddressDestFromMap', 'txtAddressDest', 'txtAddressDestView', 'AddressDest', 'destAddress'],
+    }
+  }
+  return {
+    kind: 'origin', label: 'مبدا', paneId: 'pills-5', nextBtn: '#btnGoLVL6', nextPaneId: 'pills-6',
+    mapSelectors: ['#mapp-MapSource', '#MapSource', '#mapSource', '#sourceMap', '#SourceMap'],
+    addressIds: ['txtAddressSourceFromMap', 'txtAddressSource', 'txtAddressSourceView', 'AddressSource', 'sourceAddress'],
+  }
+}
+
+async function waitForPaneActiveLocal(page, paneId, timeoutMs = 30000) {
+  const t0 = Date.now()
+  while (!timeoutMs || Date.now() - t0 < timeoutMs) {
+    const ok = await page.evaluate((id) => {
+      const el = document.getElementById(id)
+      return !!(el && el.classList.contains('active'))
+    }, paneId).catch(() => false)
+    if (ok) return true
+    await page.waitForTimeout(500).catch(() => {})
+  }
+  return false
+}
+
+async function installMapManualClickWatcher(page, cfg) {
+  await page.evaluate((cfg) => {
+    window.__barbargMapClickWatcherInstalled = window.__barbargMapClickWatcherInstalled || false
+    window.__barbargExpectedMapKind = cfg.kind
+    window.__barbargCurrentMapPaneId = cfg.paneId
+    window.__barbargCurrentMapSelectors = cfg.mapSelectors || []
+    window.__barbargLastManualMapClick = null
+
+    if (window.__barbargMapClickWatcherInstalled) return
+    window.__barbargMapClickWatcherInstalled = true
+
+    document.addEventListener('click', (ev) => {
+      const paneId = window.__barbargCurrentMapPaneId
+      const selectors = window.__barbargCurrentMapSelectors || []
+      const pane = paneId ? document.getElementById(paneId) : null
+      const target = ev.target
+      if (!target) return
+
+      const containers = []
+      for (const sel of selectors) {
+        const el = document.querySelector(sel)
+        if (el) containers.push(el)
+      }
+      document.querySelectorAll('.leaflet-container, .mapp-map').forEach((el) => containers.push(el))
+
+      const clickedMap = containers.some((el) => {
+        if (!el || !el.contains(target)) return false
+        return !pane || pane.contains(el)
+      })
+
+      if (clickedMap) {
+        window.__barbargLastManualMapClick = {
+          kind: window.__barbargExpectedMapKind,
+          at: Date.now(),
+        }
+      }
+    }, true)
+  }, cfg).catch(() => {})
+}
+
+async function captureLocationFromMapStep(page, kind, opts = {}) {
+  const cfg = mapCfgFor(kind)
+  const settleMs = Math.max(1000, Number(opts.settleMs || 6000))
+  const timeoutMs = Math.max(30000, Number(opts.timeoutMs || 10 * 60 * 1000))
+
+  await waitForPaneActiveLocal(page, cfg.paneId, 20000).catch(() => false)
+  await installMapManualClickWatcher(page, cfg)
+
+  console.log('\n═══════════════════════════════════════════════════════════════')
+  console.log(`🖱 انتخاب ${cfg.label} از نقشه واقعی سامانه`)
+  console.log(`   روی نقشه کلیک کنید. اگر اشتباه شد دوباره کلیک کنید؛ آخرین نقطه ملاک است.`)
+  console.log(`   ${Math.round(settleMs / 1000)} ثانیه بعد از آخرین کلیک، ${cfg.label} نهایی می‌شود.`)
+  console.log('═══════════════════════════════════════════════════════════════')
+
+  let last = null
+  let changed = 0
+
+  return new Promise((resolve, reject) => {
+    let settleTimer = null
+    let healthTimer = null
+    let finished = false
+    const context = page.context ? page.context() : null
+    const browser = context && context.browser ? context.browser() : null
+
+    const cleanup = () => {
+      clearTimeout(timeoutTimer)
+      if (settleTimer) clearTimeout(settleTimer)
+      if (healthTimer) clearInterval(healthTimer)
+      page.off('response', onResponse)
+      page.off('close', onClosed)
+      page.off('crash', onCrashed)
+      if (context) context.off('close', onContextClosed)
+      if (browser) browser.off('disconnected', onBrowserDisconnected)
+    }
+
+    const fail = (err) => {
+      if (finished) return
+      finished = true
+      cleanup()
+      reject(err)
+    }
+
+    const succeed = (loc) => {
+      if (finished) return
+      finished = true
+      cleanup()
+      resolve(loc)
+    }
+
+    const onClosed = () => fail(new Error(`مرورگر هنگام انتخاب ${cfg.label} بسته شد`))
+    const onCrashed = () => fail(new Error(`مرورگر هنگام انتخاب ${cfg.label} کرش کرد`))
+    const onContextClosed = () => fail(new Error(`نشست مرورگر هنگام انتخاب ${cfg.label} بسته شد`))
+    const onBrowserDisconnected = () => fail(new Error(`مرورگر هنگام انتخاب ${cfg.label} قطع/بسته شد`))
+
+    const timeoutTimer = setTimeout(() => {
+      fail(new Error(`مهلت انتخاب ${cfg.label} از نقشه تمام شد`))
+    }, timeoutMs)
+
+    // کمربند ایمنی: بعضی وقت‌ها در ویندوز، بستن دستی پنجره فقط با تأخیر به event تبدیل می‌شود.
+    // هر ۱ ثانیه وضعیت صفحه/مرورگر را چک می‌کنیم تا خطا سریع به پنل برگردد.
+    healthTimer = setInterval(() => {
+      try {
+        if (page.isClosed && page.isClosed()) fail(new Error(`مرورگر هنگام انتخاب ${cfg.label} بسته شد`))
+        else if (browser && !browser.isConnected()) fail(new Error(`مرورگر هنگام انتخاب ${cfg.label} قطع/بسته شد`))
+      } catch (e) {
+        fail(new Error(`مرورگر هنگام انتخاب ${cfg.label} بسته شد`))
+      }
+    }, 1000)
+
+    const scheduleDone = () => {
+      if (settleTimer) clearTimeout(settleTimer)
+      const seq = changed
+      console.log(`   ⏳ ${Math.round(settleMs / 1000)} ثانیه برای تثبیت آخرین ${cfg.label} صبر می‌کنم...`)
+      settleTimer = setTimeout(() => {
+        if (seq !== changed) return scheduleDone()
+        console.log(`   ✅ آخرین ${cfg.label} نهایی شد: [Lat: ${last.lat}, Lon: ${last.lon}]`)
+        if (last.address) console.log(`      آدرس: ${last.address}`)
+        succeed(last)
+      }, settleMs)
+    }
+
+    const onResponse = async (response) => {
+      try {
+        if (!response.url().includes('RevereseMap')) return
+
+        const hadRecentManualClick = await page.evaluate((expectedKind) => {
+          const x = window.__barbargLastManualMapClick
+          return !!(x && x.kind === expectedKind && Date.now() - x.at < 45000)
+        }, cfg.kind).catch(() => false)
+
+        if (!hadRecentManualClick) {
+          console.log(`   ⏭ پاسخ RevereseMap برای ${cfg.label} نادیده گرفته شد؛ کلیک دستی روی نقشه ثبت نشده بود.`)
+          return
+        }
+
+        const u = new URL(response.url())
+        const lat = parseFloat(u.searchParams.get('lat'))
+        const lon = parseFloat(u.searchParams.get('lon'))
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
+        if (Math.abs(lat - 35.7219) < 0.001 && Math.abs(lon - 51.3347) < 0.001) return
+
+        const data = await response.json().catch(() => null)
+        const obj = data && data.obj ? data.obj : {}
+        last = {
+          lat, lon,
+          address: obj.postal_address || obj.address || '',
+          province: obj.province || '',
+          county: obj.county || obj.city || '',
+          region: obj.region || '',
+          neighbourhood: obj.neighbourhood || '',
+          savedAt: new Date().toISOString(),
+        }
+        changed++
+        console.log(`\n   📍 ${cfg.label} انتخاب شد/تغییر کرد:`)
+        console.log(`      Lat: ${last.lat}`)
+        console.log(`      Lon: ${last.lon}`)
+        if (last.address) console.log(`      آدرس: ${last.address}`)
+        scheduleDone()
+      } catch (e) {}
+    }
+
+    page.on('response', onResponse)
+    page.on('close', onClosed)
+    page.on('crash', onCrashed)
+    if (context) context.on('close', onContextClosed)
+    if (browser) browser.on('disconnected', onBrowserDisconnected)
+  })
+}
+
+async function applySavedMapLocationStep(page, kind, loc, OUT, tag, verbose = true) {
+  const cfg = mapCfgFor(kind)
+  const log = (m) => { if (verbose) console.log(m) }
+  if (!loc || !Number.isFinite(+loc.lat) || !Number.isFinite(+loc.lon)) {
+    log(`   ✖ مختصات ذخیره‌شده ${cfg.label} معتبر نیست`)
+    return false
+  }
+  const lat = +loc.lat
+  const lon = +loc.lon
+  const address = loc.address || `${lat}, ${lon}`
+
+  log(`   📍 اعمال ${cfg.label} ذخیره‌شده روی نقشه: [${lat}, ${lon}]`)
+  if (address) log(`      آدرس: ${address}`)
+
+  const r = await page.evaluate(async ({ cfg, lat, lon, address }) => {
+    const visible = (el) => {
+      if (!el) return false
+      const st = window.getComputedStyle(el)
+      const b = el.getBoundingClientRect()
+      return st.display !== 'none' && st.visibility !== 'hidden' && b.width > 20 && b.height > 20
+    }
+    const isMap = (v) => v && typeof v === 'object' && typeof v.setView === 'function' && typeof v.panTo === 'function'
+    const pane = document.getElementById(cfg.paneId)
+
+    function containers() {
+      const arr = []
+      for (const sel of cfg.mapSelectors || []) { const el = document.querySelector(sel); if (el) arr.push(el) }
+      document.querySelectorAll('.leaflet-container, .mapp-map, [id*="Map"], [id*="map"]').forEach((el) => arr.push(el))
+      return Array.from(new Set(arr)).sort((a, b) => {
+        const sc = (el) => (pane && pane.contains(el) ? 200 : 0) + (visible(el) ? 100 : 0) + ((cfg.mapSelectors || []).includes('#' + el.id) ? 80 : 0)
+        return sc(b) - sc(a)
+      })
+    }
+    const found = []
+    const add = (v) => { if (isMap(v) && !found.includes(v)) found.push(v) }
+    const cs = containers()
+    for (const el of cs) {
+      for (const key of Object.getOwnPropertyNames(el)) { try { add(el[key]) } catch (e) {} }
+      if (window.jQuery) { try { const d = window.jQuery(el).data(); for (const k in d) add(d[k]) } catch (e) {} }
+    }
+    if (window.mapp) {
+      if (typeof window.mapp.getMap === 'function') for (const el of cs) { if (el.id) { try { add(window.mapp.getMap(el.id)) } catch (e) {} } }
+      if (window.mapp.maps) for (const k in window.mapp.maps) add(window.mapp.maps[k])
+    }
+    for (const k of Object.getOwnPropertyNames(window)) {
+      try {
+        const v = window[k]
+        add(v)
+        if (v && typeof v === 'object' && !Array.isArray(v)) for (const sub of Object.keys(v).slice(0, 120)) add(v[sub])
+      } catch (e) {}
+    }
+    found.sort((a, b) => {
+      const sc = (m) => {
+        const c = m._container || (m.getContainer && m.getContainer())
+        return (c && pane && pane.contains(c) ? 200 : 0) + (c && visible(c) ? 100 : 0)
+      }
+      return sc(b) - sc(a)
+    })
+    const map = found[0]
+    let marker = false
+    let moved = false
+    if (map) {
+      try {
+        if (map.invalidateSize) map.invalidateSize(true)
+        if (map.flyTo) map.flyTo([lat, lon], 17, { animate: true, duration: 1 })
+        map.setView([lat, lon], 17)
+        map.panTo([lat, lon])
+        moved = true
+      } catch (e) { try { map.setView([lat, lon], 17); moved = true } catch (e2) {} }
+      try {
+        if (map.eachLayer) map.eachLayer((layer) => {
+          if (layer && typeof layer.setLatLng === 'function' && (layer._icon || layer.options?.icon || layer.dragging)) {
+            layer.setLatLng([lat, lon]); marker = true
+          }
+        })
+      } catch (e) {}
+      if (!marker && window.L && typeof window.L.marker === 'function') {
+        try { window.L.marker([lat, lon]).addTo(map); marker = true } catch (e) {}
+      }
+      try {
+        const ll = window.L && window.L.latLng ? window.L.latLng(lat, lon) : { lat, lng: lon }
+        const cp = map.latLngToContainerPoint ? map.latLngToContainerPoint(ll) : { x: 200, y: 200 }
+        if (map.fire) map.fire('click', { latlng: ll, containerPoint: cp, layerPoint: cp, originalEvent: new MouseEvent('click', { bubbles: true }) })
+      } catch (e) {}
+    }
+    for (const id of cfg.addressIds || []) {
+      const el = document.getElementById(id)
+      if (el) {
+        el.value = address
+        el.setAttribute('value', address)
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+        el.dispatchEvent(new Event('change', { bubbles: true }))
+        if (window.jQuery) { try { window.jQuery(el).val(address).trigger('input').trigger('change') } catch (e) {} }
+      }
+    }
+    try { await fetch(`/Barname/Document/RevereseMap?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`, { credentials: 'include', cache: 'no-store' }) } catch (e) {}
+    return { mapFound: !!map, moved, marker }
+  }, { cfg, lat, lon, address }).catch(() => ({ mapFound: false, moved: false, marker: false }))
+
+  log(`      ${r.mapFound ? '✔' : '✖'} نقشه پیدا شد | ${r.moved ? '✔' : '✖'} دوربین | ${r.marker ? '✔' : '✖'} مارکر`)
+  await page.waitForTimeout(1200)
+  await page.screenshot({ path: path.join(OUT, `${tag}-map-saved.png`), fullPage: true }).catch(() => {})
+
+  const btn = await page.$(cfg.nextBtn)
+  if (!btn) { log(`   ✖ ${cfg.nextBtn} نیست`); return false }
+  await btn.click().catch(() => {})
+  await page.waitForTimeout(2200)
+  const active = await waitForPaneActiveLocal(page, cfg.nextPaneId, 25000)
+  if (!active) {
+    const sw = await readSwalError(page)
+    if (sw) log(`   ✖ خطای سایت: ${sw}`)
+    await page.screenshot({ path: path.join(OUT, `${tag}-map-saved-error.png`), fullPage: true }).catch(() => {})
+  }
+  return active
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    runWaybill — همان توالی main() در test-step1.js
    ولی داده از بیرون می‌آید (پروفایل کاربر) و مرورگر هم می‌تواند
@@ -2247,6 +2624,18 @@ async function runWaybillOnce(opts) {
   let browser = await chromium.launch(LAUNCH)
   let ctx = await browser.newContext(CTX)
   let page = await ctx.newPage()
+
+  let browserClosedByUser = false
+  const markBrowserClosed = () => { browserClosedByUser = true }
+  browser.on('disconnected', markBrowserClosed)
+  ctx.on('close', markBrowserClosed)
+  page.on('close', markBrowserClosed)
+
+  const assertBrowserOpen = (where = '') => {
+    if (browserClosedByUser || page.isClosed() || !browser.isConnected()) {
+      throw new Error(`مرورگر توسط کاربر بسته شد${where ? ` (${where})` : ''}`)
+    }
+  }
 
   const fail = async (error, kind = 'error') => {
     if (closeBrowser) await browser.close().catch(() => {})
@@ -2425,6 +2814,7 @@ async function runWaybillOnce(opts) {
   let ok1 = false, ok2 = false, ok3 = false, ok4 = false, ok5 = false
   let ok6 = false, ok7 = false, ok8 = false, ok9 = false
   let trackingCode = null
+  let capturedMapLocations = null
   let lastStep = 'فرستنده'
   let midFail = null          // اگر وسط گام‌ها اتصال قطع شد
 
@@ -2462,32 +2852,77 @@ async function runWaybillOnce(opts) {
     ok4 = false
   }
 
-  if (ok4) {
+  if (ok4 && opts.captureMapLocations) {
+    console.log('\n═══ انتخاب نقشه برای ذخیره در پروفایل ═══')
+    lastStep = 'انتخاب مبدا از نقشه'
+    const origin = await captureLocationFromMapStep(page, 'origin', {
+      settleMs: opts.mapSettleMs || 6000,
+      timeoutMs: opts.mapSelectionTimeoutMs || 10 * 60 * 1000,
+    })
+    ok5 = await step(5, !!origin, 'انتخاب مبدا از نقشه')
+
+    if (ok5) {
+      console.log('\n➜ رفتن خودکار از گام ۵ به گام ۶ ...')
+      const nb = await page.$('#btnGoLVL6')
+      if (!nb) throw new Error('دکمه رفتن به گام ۶ (#btnGoLVL6) پیدا نشد')
+      await nb.click().catch(() => {})
+      const active6 = await waitForPaneActiveLocal(page, 'pills-6', 30000)
+      if (!active6) throw new Error('بعد از انتخاب مبدا، گام ۶ باز نشد')
+      console.log('   ✅ گام ۶ باز شد')
+
+      lastStep = 'انتخاب مقصد از نقشه'
+      const destination = await captureLocationFromMapStep(page, 'dest', {
+        settleMs: opts.mapSettleMs || 6000,
+        timeoutMs: opts.mapSelectionTimeoutMs || 10 * 60 * 1000,
+      })
+      ok6 = await step(6, !!destination, 'انتخاب مقصد از نقشه')
+      capturedMapLocations = { origin, destination }
+      if (ok6) {
+        console.log('\n✅ مبدا و مقصد از نقشه واقعی سامانه دریافت شدند؛ مرورگر بسته می‌شود.')
+      }
+    }
+  } else if (ok4) {
     console.log('\n═══ ' + STEP_ORIGIN.label + ' ═══')
     lastStep = 'مبدا'
-    ok5 = await step(5, await fillLocationStep(page, STEP_ORIGIN, d.origin, OUT, 'step5', true, d.driver.plate), 'مبدا')
+    if (d.origin && d.origin.mapLocation) {
+      ok5 = await step(5, await applySavedMapLocationStep(page, 'origin', d.origin.mapLocation, OUT, 'step5', true), 'مبدا')
+    } else {
+      ok5 = await step(5, await fillLocationStep(page, STEP_ORIGIN, d.origin, OUT, 'step5', true, d.driver.plate), 'مبدا')
+    }
   }
-  if (ok5) {
+  if (!opts.captureMapLocations && ok5) {
     console.log('\n═══ ' + STEP_DEST.label + ' ═══')
     lastStep = 'مقصد'
-    ok6 = await step(6, await fillLocationStep(page, STEP_DEST, d.destination, OUT, 'step6', true, d.driver.plate), 'مقصد')
+    if (d.destination && d.destination.mapLocation) {
+      ok6 = await step(6, await applySavedMapLocationStep(page, 'dest', d.destination.mapLocation, OUT, 'step6', true), 'مقصد')
+    } else {
+      ok6 = await step(6, await fillLocationStep(page, STEP_DEST, d.destination, OUT, 'step6', true, d.driver.plate), 'مقصد')
+    }
   }
-  if (ok6) {
+  if (!opts.captureMapLocations && ok6) {
     console.log('\n═══ گام ۷: مشخصات مبدا و مقصد ═══')
     lastStep = 'بازبینی'
     ok7 = await step(7, await passReviewStep(page), 'بازبینی')
   }
-  if (ok7) {
+  if (!opts.captureMapLocations && ok7) {
     console.log('\n═══ گام ۸: کرایه و صدور سند ═══')
     lastStep = 'کرایه'
     ok8 = await step(8, await fillFareStep(page, d.fare, OUT, 'step8'), 'کرایه')
   }
-  if (ok8) {
+  if (!opts.captureMapLocations && ok8) {
     console.log('\n═══ گام ۹: تایید مشخصات و ثبت نهایی ═══')
     lastStep = 'ثبت نهایی'
     const res = await finalConfirmStep(page, OUT, 'step9', { dryRun: !submit })
-    ok9 = !!res
-    if (typeof res === 'string') { trackingCode = res; console.log(`\n🎉🎉 کد رهگیری: ${res}`) }
+    ok9 = !!res && (typeof res === 'object' ? res.success !== false : true)
+    if (typeof res === 'string') {
+      trackingCode = res
+      console.log(`\n🎉🎉 کد رهگیری: ${res}`)
+    } else if (res && typeof res === 'object' && res.trackingCode) {
+      trackingCode = res.trackingCode
+      console.log(`\n🎉🎉 کد رهگیری: ${trackingCode}`)
+    } else if (res && typeof res === 'object' && res.finalReceipt) {
+      console.log('\n🎉🎉 ثبت نهایی با نمایش رسید سایت تایید شد')
+    }
     await step(9, ok9, 'ثبت نهایی')
   }
 
@@ -2502,7 +2937,7 @@ async function runWaybillOnce(opts) {
   }
 
   /* اگر گامی بدون پرتاب خطا شکست خورد، ببین علتش سلامت صفحه بوده یا داده */
-  if (!midFail && !ok9) {
+  if (!midFail && !(opts.captureMapLocations ? ok6 : ok9)) {
     const h = await pageHealth(page)
     if (h !== 'ok') {
       const m = {
@@ -2516,9 +2951,16 @@ async function runWaybillOnce(opts) {
     }
   }
 
-  const steps = [ok1, ok2, ok3, ok4, ok5, ok6, ok7, ok8, ok9]
+  const steps = opts.captureMapLocations
+    ? [ok1, ok2, ok3, ok4, ok5, ok6]
+    : [ok1, ok2, ok3, ok4, ok5, ok6, ok7, ok8, ok9]
   console.log('\n' + '─'.repeat(46))
-  console.log('  خلاصه: ' + steps.map((m, i) => `${i + 1}${m ? '✔' : '✖'}`).join('  '))
+  if (opts.captureMapLocations) {
+    console.log('  خلاصه انتخاب نقشه: ' + steps.map((m, i) => `${i + 1}${m ? '✔' : '✖'}`).join('  '))
+    console.log('  توجه: گام‌های ۷ تا ۹ عمداً اجرا نمی‌شوند؛ این عملیات فقط برای ذخیره مبدا و مقصد است.')
+  } else {
+    console.log('  خلاصه: ' + steps.map((m, i) => `${i + 1}${m ? '✔' : '✖'}`).join('  '))
+  }
   console.log('─'.repeat(46))
 
   const swalNow = await readSwalError(page)
@@ -2528,10 +2970,11 @@ async function runWaybillOnce(opts) {
     await page.waitForTimeout(keepOpenMs).catch(() => {})
   }
 
-  const success = submit ? !!trackingCode : ok9
+  const success = opts.captureMapLocations ? !!(ok5 && ok6 && capturedMapLocations) : !!ok9
   const result = {
     success,
     trackingCode,
+    mapLocations: capturedMapLocations,
     steps,
     lastStep,
     kind: success ? 'ok' : (midFail ? midFail.kind : 'error'),
@@ -3374,22 +3817,42 @@ async function importLastBarname(opts) {
  *  «ایران ۴۸»    →  iran=48 (بقیه خالی) — برای تشخیص استان کافی است
  */
 function parsePlateText(txt) {
-  const s = toLatin(txt || '').replace(/[-_|]/g, ' ').trim()
-  /* عددی که بلافاصله بعد از «ایران» آمده = کد ایران (سمت راست پلاک).
-     حتی اگر فقط «ایران ۴۸» داشته باشیم، تشخیص استان باید کار کند. */
-  let iran = ''
-  const m = s.match(/ایران\s*(\d+)/i)
-  if (m) iran = m[1]
-  /* برای یافتن حرف پلاک، کلمه‌ی «ایران» را کنار بگذار
-     (وگرنه «ایران ۷۵» → حرف = «ایران» می‌شد) */
-  const letterSrc = s.replace(/ایران/g, ' ')
-  const letter = (letterSrc.match(/[\u0600-\u06FF]+/) || [''])[0]
-  const nums = s.match(/\d+/g) || []
+  const raw = toLatin(txt || '').trim()
+  const beforeIran = raw.match(/(?:^|\D)(\d{1,2})\s*(?:ایران|ايران)(?:\D|$)/i)?.[1] || ''
+  const afterIran = raw.match(/(?:ایران|ايران)\s*(\d{1,2})(?:\D|$)/i)?.[1] || ''
+  const explicitIran = beforeIran || afterIran
+
+  const s = raw.replace(/(?:ایران|ايران)/g, ' ').replace(/[-_|]/g, ' ').trim()
+  const letter = (s.match(/[\u0600-\u06FF]+/) || [''])[0]
+  let nums = s.match(/\d+/g) || []
+
+  if (explicitIran) {
+    const idx = nums.findIndex((n) => n === explicitIran)
+    if (idx >= 0) nums = nums.filter((_, i) => i !== idx)
+  }
+
+  let twoDigit = ''
+  let threeDigit = ''
+  let iran = explicitIran
+  const threeIdx = nums.findIndex((n) => n.length === 3)
+
+  if (threeIdx >= 0) {
+    threeDigit = nums[threeIdx]
+    const others = nums.filter((_, i) => i !== threeIdx)
+    twoDigit = others.find((n) => n.length <= 2) || others[0] || ''
+    if (!iran) iran = others.find((n) => n !== twoDigit && n.length <= 2) || ''
+  } else {
+    twoDigit = nums.find((n) => n.length <= 2) || nums[0] || ''
+    if (!iran) iran = nums.find((n) => n !== twoDigit && n.length <= 2) || ''
+  }
+
+  if (!iran && nums.length >= 2) iran = nums[1]
+
   return {
-    twoDigit:   nums[0] || '',
-    letter:     letter || '',
-    threeDigit: nums[1] || '',
-    iran:       iran || nums[2] || '',
+    twoDigit,
+    letter: letter || '',
+    threeDigit,
+    iran,
   }
 }
 
@@ -3400,6 +3863,9 @@ const AUTO_PROV_TAG = /\[auto-province\]/
 function profileToData(p) {
   const name = String(p.driverName || '').trim()
   const parts = name.split(/\s+/)
+  const notes = String(p.notes || '')
+  const mapLocations = parseProfileMapLocations(notes)
+  const manualLocation = MANUAL_LOCATION_TAG.test(notes)
   return {
     sender: {
       type: p.senderType || 'حقیقی',
@@ -3442,7 +3908,9 @@ function profileToData(p) {
       address: p.originAddress || '',
       postalCode: p.originPostalCode || '',
       // اگر کاربر تیک «تشخیص خودکار استان از پلاک» را زده باشد
-      autoProvince: AUTO_PROV_TAG.test(String(p.notes || '')),
+      autoProvince: AUTO_PROV_TAG.test(notes),
+      // اگر پروفایل با دکمه نقشه ذخیره شده و حالت دستی خاموش باشد، گام ۵ با مختصات انجام می‌شود
+      mapLocation: !manualLocation && mapLocations ? mapLocations.origin : null,
     },
     destination: {
       province: p.destProvince || '',
@@ -3454,7 +3922,9 @@ function profileToData(p) {
          (قبلا از فیلد p.autoProvinceFromPlate می‌خواند که در دیتابیس
          وجود ندارد و همیشه false بود ⇒ استان مقصد هیچ‌وقت از پلاک
          تشخیص داده نمی‌شد — باگ. حالا هر دو از notes خوانده می‌شوند.) */
-      autoProvince: AUTO_PROV_TAG.test(String(p.notes || '')) || p.autoProvinceFromPlate === true,
+      autoProvince: AUTO_PROV_TAG.test(notes) || p.autoProvinceFromPlate === true,
+      // اگر پروفایل با دکمه نقشه ذخیره شده و حالت دستی خاموش باشد، گام ۶ با مختصات انجام می‌شود
+      mapLocation: !manualLocation && mapLocations ? mapLocations.destination : null,
     },
     fare: {
       amount: toLatin(p.freightCost || ''),
@@ -3479,18 +3949,48 @@ function validateData(d) {
     [d.driver.plate.letter, 'پلاک (حرف)'], [d.driver.plate.threeDigit, 'پلاک (سه رقم)'],
     [d.driver.plate.iran, 'پلاک (کد ایران)'],
     [d.cargo.name, 'نام کالا'], [d.cargo.weightTon, 'وزن کالا'], [d.cargo.value, 'ارزش کالا'],
-    [d.origin.city, 'شهر مبدا'],
-    [d.destination.city, 'شهر مقصد'],
     [d.fare.amount, 'مبلغ کرایه'],
   ]
+  /* اگر مختصات نقشه ذخیره شده باشد، شهر/استان برای گام ۵ و ۶ لازم نیست؛
+     در غیر این صورت روش دستی/Select2 همچنان شهر و استان را می‌خواهد. */
+  if (!d.origin.mapLocation) req.push([d.origin.city, 'شهر مبدا'])
+  if (!d.destination.mapLocation) req.push([d.destination.city, 'شهر مقصد'])
   /* در حالت «تشخیص خودکار استان از پلاک»، استان لازم نیست کاربر پر کند
      — ربات از کد ایران پلاک تشخیصش می‌دهد. */
-  if (!d.origin.autoProvince) req.push([d.origin.province, 'استان مبدا'])
-  if (!d.destination.autoProvince) req.push([d.destination.province, 'استان مقصد'])
+  if (!d.origin.mapLocation && !d.origin.autoProvince) req.push([d.origin.province, 'استان مبدا'])
+  if (!d.destination.mapLocation && !d.destination.autoProvince) req.push([d.destination.province, 'استان مقصد'])
   /* «آدرس مبدا/مقصد» دیگر اجباری نیست — نقشه‌ی سایت بعد از انتخاب
      شهرستان و محله، خودش آدرس متنی را پر می‌کند. */
   for (const [v, label] of req) if (!String(v || '').trim()) miss.push(label)
   return miss
+}
+
+/** اعتبارسنجی مخصوص دکمه «ثبت مبدا و مقصد از نقشه».
+ * برای این عملیات فقط باید بتوانیم تا گام ۵ برسیم، پس شهر/استان/کرایه لازم نیست.
+ */
+function validateMapCaptureData(d) {
+  const miss = []
+  const req = [
+    [d.sender.firstName, 'نام فرستنده'], [d.sender.lastName, 'نام خانوادگی فرستنده'],
+    [d.sender.mobile, 'موبایل فرستنده'], [d.sender.nationalId, 'کد ملی فرستنده'],
+    [d.receiver.firstName, 'نام گیرنده'], [d.receiver.lastName, 'نام خانوادگی گیرنده'],
+    [d.receiver.mobile, 'موبایل گیرنده'], [d.receiver.nationalId, 'کد ملی گیرنده'],
+    [d.driver.name, 'نام راننده'], [d.driver.plate.twoDigit, 'پلاک (دو رقم اول)'],
+    [d.driver.plate.letter, 'پلاک (حرف)'], [d.driver.plate.threeDigit, 'پلاک (سه رقم)'],
+    [d.driver.plate.iran, 'پلاک (کد ایران)'],
+    [d.cargo.name, 'نام کالا'], [d.cargo.weightTon, 'وزن کالا'], [d.cargo.value, 'ارزش کالا'],
+  ]
+  for (const [v, label] of req) if (!String(v || '').trim()) miss.push(label)
+  return miss
+}
+
+async function runProfileMapCapture(opts) {
+  return runWaybill({
+    ...opts,
+    submit: false,
+    closeBrowser: true,
+    captureMapLocations: true,
+  })
 }
 
 module.exports = {
@@ -3499,10 +3999,12 @@ module.exports = {
   humanPause, humanType, humanClick, settlePage,
   parsePlateFromHistory, parseHistoryLocation,
   provinceFromPlate, select2Pick, IRAN_CODE_TO_PROVINCE,
-  splitLocation, splitPersonName, profileToData, validateData, parsePlateText, setLogSink,
+  splitLocation, splitPersonName, profileToData, validateData, validateMapCaptureData, parsePlateText, setLogSink,
+  parseProfileMapLocations, runProfileMapCapture,
   // برای استفاده‌ی مستقیم در ابزارهای تست
   gotoR, classifyTemplate, solveMath, waitLoginResult,
   fillPersonStep, fillDriverVehicleStep, fillCargoStep, fillLocationStep,
+  captureLocationFromMapStep, applySavedMapLocationStep,
   passReviewStep, fillFareStep, finalConfirmStep,
   pageHealth, isWafChallenge, waitUntilSiteBack,
   isNetBlockError, isPageDeadError, isPermanentError,

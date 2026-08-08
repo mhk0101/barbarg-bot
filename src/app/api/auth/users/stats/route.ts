@@ -1,16 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyToken } from '@/lib/auth/authService'
+import { requirePermission } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 
-async function authCheck(request: NextRequest) {
-  const token = request.cookies.get('access_token')?.value
-  if (!token) return null
-  return verifyToken(token)
-}
-
 export async function GET(request: NextRequest) {
-  const user = await authCheck(request)
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const guard = await requirePermission(request, 'manage_users')
+  if (!guard.ok) return guard.response
 
   const [total, active, blocked, locked] = await Promise.all([
     prisma.user.count(),

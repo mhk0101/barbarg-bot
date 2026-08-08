@@ -1,13 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyToken } from '@/lib/auth/authService'
+import { requirePermission } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import bcrypt from 'bcryptjs'
-
-async function authCheck(request: NextRequest) {
-  const token = request.cookies.get('access_token')?.value
-  if (!token) return null
-  return verifyToken(token)
-}
 
 const userSelect = {
   id: true,
@@ -28,9 +22,19 @@ const userSelect = {
   updatedAt: true,
 }
 
+function normalizeEmail(email: unknown): string {
+  return String(email || '').trim().toLowerCase()
+}
+
+function canAssignRole(actorRole: string, targetRole: string): boolean {
+  if (actorRole === 'owner') return true
+  // مدیر نباید مالک بسازد یا کسی را مالک کند.
+  return targetRole !== 'owner'
+}
+
 export async function GET(request: NextRequest) {
-  const user = await authCheck(request)
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const guard = await requirePermission(request, 'manage_users')
+  if (!guard.ok) return guard.response
 
   const { searchParams } = new URL(request.url)
   const search = searchParams.get('search') || undefined
@@ -73,15 +77,26 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const user = await authCheck(request)
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  if (!['owner', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  const guard = await requirePermission(request, 'manage_users')
+  if (!guard.ok) return guard.response
 
   const body = await request.json()
-  const { name, email, password, role, phone, department, notes } = body
+  const name = String(body.name || '').trim()
+  const email = normalizeEmail(body.email)
+  const password = String(body.password || '')
+  const role = String(body.role || 'operator')
+  const phone = body.phone ? String(body.phone).trim() : null
+  const department = body.department ? String(body.department).trim() : null
+  const notes = body.notes ? String(body.notes).trim() : null
 
   if (!name || !email || !password) {
     return NextResponse.json({ error: 'نام، ایمیل و رمز عبور الزامی هستند' }, { status: 400 })
+  }
+  if (password.length < 6) {
+    return NextResponse.json({ error: 'رمز عبور باید حداقل ۶ کاراکتر باشد' }, { status: 400 })
+  }
+  if (!canAssignRole(guard.user.role, role)) {
+    return NextResponse.json({ error: 'فقط مالک سیستم می‌تواند نقش مالک ایجاد کند' }, { status: 403 })
   }
 
   const existing = await prisma.user.findUnique({ where: { email } })
@@ -95,28 +110,40 @@ export async function POST(request: NextRequest) {
       name,
       email,
       password: hashed,
-      role: role || 'operator',
-      phone: phone || null,
-      department: department || null,
-      notes: notes || null,
+      role,
+      phone,
+      department,
+      notes,
+      status: 'active',
     },
     select: userSelect,
   })
+
+  await prisma.auditLog.create({
+    data: { userId: guard.user.userId, action: 'user_created', resource: 'user', resourceId: created.id, details: { email, role } },
+  }).catch(() => {})
 
   return NextResponse.json(created, { status: 201 })
 }
 
 export async function PUT(request: NextRequest) {
-  const user = await authCheck(request)
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  if (!['owner', 'admin'].includes(user.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  const guard = await requirePermission(request, 'manage_users')
+  if (!guard.ok) return guard.response
 
   const body = await request.json()
-  const { id, name, email, phone, department, role, status, notes, password, action } = body
+  const { id, action } = body
 
   if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 })
 
+  const target = await prisma.user.findUnique({ where: { id } })
+  if (!target) return NextResponse.json({ error: 'کاربر یافت نشد' }, { status: 404 })
+
+  if (target.role === 'owner' && guard.user.role !== 'owner') {
+    return NextResponse.json({ error: 'فقط مالک سیستم می‌تواند کاربر مالک را تغییر دهد' }, { status: 403 })
+  }
+
   if (action === 'lock') {
+    if (id === guard.user.userId) return NextResponse.json({ error: 'نمی‌توانید حساب خودتان را قفل کنید' }, { status: 400 })
     const updated = await prisma.user.update({
       where: { id },
       data: { lockedUntil: new Date(Date.now() + 15 * 60 * 1000) },
@@ -143,23 +170,52 @@ export async function PUT(request: NextRequest) {
     const hashed = await bcrypt.hash(randomPass, 10)
     const updated = await prisma.user.update({
       where: { id },
-      data: { password: hashed, mustChangePassword: true },
+      data: { password: hashed, mustChangePassword: true, failedAttempts: 0, lockedUntil: null },
       select: userSelect,
     })
     return NextResponse.json({ ...updated, newPassword: randomPass })
   }
 
   const updateData: Record<string, unknown> = {}
-  if (name !== undefined) updateData.name = name
-  if (email !== undefined) updateData.email = email
-  if (phone !== undefined) updateData.phone = phone
-  if (department !== undefined) updateData.department = department
-  if (role !== undefined) updateData.role = role
-  if (status !== undefined) updateData.status = status
-  if (notes !== undefined) updateData.notes = notes
 
-  if (password) {
+  if (body.name !== undefined) updateData.name = String(body.name || '').trim()
+  if (body.email !== undefined) {
+    const email = normalizeEmail(body.email)
+    if (!email) return NextResponse.json({ error: 'ایمیل الزامی است' }, { status: 400 })
+    const duplicate = await prisma.user.findUnique({ where: { email } })
+    if (duplicate && duplicate.id !== id) return NextResponse.json({ error: 'ایمیل تکراری است' }, { status: 400 })
+    updateData.email = email
+  }
+  if (body.phone !== undefined) updateData.phone = body.phone ? String(body.phone).trim() : null
+  if (body.department !== undefined) updateData.department = body.department ? String(body.department).trim() : null
+  if (body.notes !== undefined) updateData.notes = body.notes ? String(body.notes).trim() : null
+
+  if (body.role !== undefined) {
+    const newRole = String(body.role)
+    if (!canAssignRole(guard.user.role, newRole)) {
+      return NextResponse.json({ error: 'فقط مالک سیستم می‌تواند نقش مالک بدهد' }, { status: 403 })
+    }
+    if (id === guard.user.userId && newRole !== target.role) {
+      return NextResponse.json({ error: 'نمی‌توانید نقش خودتان را تغییر دهید' }, { status: 400 })
+    }
+    updateData.role = newRole
+  }
+
+  if (body.status !== undefined) {
+    const newStatus = String(body.status)
+    if (id === guard.user.userId && newStatus !== 'active') {
+      return NextResponse.json({ error: 'نمی‌توانید حساب خودتان را مسدود کنید' }, { status: 400 })
+    }
+    updateData.status = newStatus
+  }
+
+  if (body.password) {
+    const password = String(body.password)
+    if (password.length < 6) return NextResponse.json({ error: 'رمز عبور باید حداقل ۶ کاراکتر باشد' }, { status: 400 })
     updateData.password = await bcrypt.hash(password, 10)
+    updateData.mustChangePassword = false
+    updateData.failedAttempts = 0
+    updateData.lockedUntil = null
   }
 
   if (Object.keys(updateData).length === 0) {
@@ -172,6 +228,9 @@ export async function PUT(request: NextRequest) {
       data: updateData,
       select: userSelect,
     })
+    await prisma.auditLog.create({
+      data: { userId: guard.user.userId, action: 'user_updated', resource: 'user', resourceId: id, details: { fields: Object.keys(updateData) } },
+    }).catch(() => {})
     return NextResponse.json(updated)
   } catch {
     return NextResponse.json({ error: 'خطا در بروزرسانی' }, { status: 400 })
@@ -179,21 +238,32 @@ export async function PUT(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const user = await authCheck(request)
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  if (user.role !== 'owner') return NextResponse.json({ error: 'Only owner can delete users' }, { status: 403 })
+  const guard = await requirePermission(request, 'manage_users')
+  if (!guard.ok) return guard.response
+  if (guard.user.role !== 'owner') return NextResponse.json({ error: 'فقط مالک سیستم می‌تواند کاربر حذف کند' }, { status: 403 })
 
   const { searchParams } = new URL(request.url)
   const id = searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 })
 
-  if (id === user.userId) {
+  if (id === guard.user.userId) {
     return NextResponse.json({ error: 'نمی‌توانید خود را حذف کنید' }, { status: 400 })
+  }
+
+  const target = await prisma.user.findUnique({ where: { id } })
+  if (!target) return NextResponse.json({ error: 'کاربر یافت نشد' }, { status: 404 })
+
+  if (target.role === 'owner') {
+    const owners = await prisma.user.count({ where: { role: 'owner' } })
+    if (owners <= 1) return NextResponse.json({ error: 'آخرین مالک سیستم قابل حذف نیست' }, { status: 400 })
   }
 
   await prisma.refreshToken.deleteMany({ where: { userId: id } })
   await prisma.session.deleteMany({ where: { userId: id } })
   await prisma.user.delete({ where: { id } })
+  await prisma.auditLog.create({
+    data: { userId: guard.user.userId, action: 'user_deleted', resource: 'user', resourceId: id, details: { email: target.email, role: target.role } },
+  }).catch(() => {})
 
   return NextResponse.json({ success: true })
 }

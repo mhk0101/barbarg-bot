@@ -36,6 +36,7 @@ const DEFAULT_ROLES: Array<{ name: string; permissions: string[] }> = [
       'view_drivers', 'create_drivers', 'view_vehicles', 'create_vehicles',
       'view_plates', 'create_plates', 'control_bot', 'view_queue',
       'manage_workers', 'view_reports', 'export_excel', 'export_pdf',
+      'manage_settings', 'manage_users', 'view_logs', 'view_notifications',
     ],
   },
   { name: 'operator', permissions: ['view_waybill', 'create_waybill', 'view_drivers'] },
@@ -91,7 +92,19 @@ export async function currentUser(request: NextRequest): Promise<AuthUser | null
   if (!token) return null
   const payload = await verifyToken(token)
   if (!payload) return null
-  return { userId: payload.userId, email: payload.email, role: payload.role }
+
+  // نقش و وضعیت را از دیتابیس می‌خوانیم تا تغییر نقش/مسدودسازی بلافاصله اثر کند
+  // و کاربر با توکن قدیمی نتواند دسترسی قبلی را نگه دارد.
+  const dbUser = await prisma.user.findUnique({
+    where: { id: payload.userId },
+    select: { id: true, email: true, role: true, status: true, lockedUntil: true },
+  }).catch(() => null)
+
+  if (!dbUser) return null
+  if (dbUser.status !== 'active') return null
+  if (dbUser.lockedUntil && dbUser.lockedUntil > new Date()) return null
+
+  return { userId: dbUser.id, email: dbUser.email, role: dbUser.role }
 }
 
 /**

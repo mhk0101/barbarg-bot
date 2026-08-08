@@ -1,0 +1,584 @@
+{
+  "metadata": {
+    "generatedAt": "2026-08-06T20:26:14.744Z",
+    "totalFoundProvinces": 31,
+    "lastUpdatedAt": "2026-08-06T20:29:55.058Z"
+  },
+  "provinces": [
+    {
+      "province": "فارس",
+      "center": "شیراز",
+      "matchedQuery": "فارس",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "فارسان",
+          "select2Id": "51",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "خراسان رضوی",
+      "center": "مشهد",
+      "matchedQuery": "مشهد",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "مشهد",
+          "select2Id": "69",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "تهران",
+      "center": "تهران",
+      "matchedQuery": "تهران",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "تهران",
+          "select2Id": "76",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "اصفهان",
+      "center": "اصفهان",
+      "matchedQuery": "اصفهان",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "اصفهان",
+          "select2Id": "84",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "آذربایجان شرقی",
+      "center": "تبریز",
+      "matchedQuery": "تبریز",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "تبریز",
+          "select2Id": "106",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "آذربایجان غربی",
+      "center": "ارومیه",
+      "matchedQuery": "ارومیه",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "ارومیه",
+          "select2Id": "129",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "خوزستان",
+      "center": "اهواز",
+      "matchedQuery": "اهواز",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "اهواز",
+          "select2Id": "144",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "مازندران",
+      "center": "ساری",
+      "matchedQuery": "ساری",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "ساری",
+          "select2Id": "159",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "گیلان",
+      "center": "رشت",
+      "matchedQuery": "رشت",
+      "optionsCount": 2,
+      "options": [
+        {
+          "text": "رشت",
+          "select2Id": "164",
+          "id": null
+        },
+        {
+          "text": "رشتخوار",
+          "select2Id": "165",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "کرمان",
+      "center": "کرمان",
+      "matchedQuery": "کرمان",
+      "optionsCount": 2,
+      "options": [
+        {
+          "text": "کرمان",
+          "select2Id": "172",
+          "id": null
+        },
+        {
+          "text": "کرمانشاه",
+          "select2Id": "173",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "سیستان و بلوچستان",
+      "center": "زاهدان",
+      "matchedQuery": "زاهدان",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "زاهدان",
+          "select2Id": "181",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "البرز",
+      "center": "کرج",
+      "matchedQuery": "البرز",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "البرز",
+          "select2Id": "188",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "کرمانشاه",
+      "center": "کرمانشاه",
+      "matchedQuery": "کرمانشاه",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "کرمانشاه",
+          "select2Id": "198",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "همدان",
+      "center": "همدان",
+      "matchedQuery": "همدان",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "همدان",
+          "select2Id": "205",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "یزد",
+      "center": "یزد",
+      "matchedQuery": "یزد",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "یزد",
+          "select2Id": "210",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "مرکزی",
+      "center": "اراک",
+      "matchedQuery": "اراک",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "اراک",
+          "select2Id": "222",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "هرمزگان",
+      "center": "بندرعباس",
+      "matchedQuery": "بندرعباس",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "بندرعباس",
+          "select2Id": "240",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "لرستان",
+      "center": "خرم‌آباد",
+      "matchedQuery": "خرم آباد",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "خرم آباد",
+          "select2Id": "257",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "کردستان",
+      "center": "سنندج",
+      "matchedQuery": "سنندج",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "سنندج",
+          "select2Id": "272",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "بوشهر",
+      "center": "بوشهر",
+      "matchedQuery": "بوشهر",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "بوشهر",
+          "select2Id": "279",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "قزوین",
+      "center": "قزوین",
+      "matchedQuery": "قزوین",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "قزوین",
+          "select2Id": "286",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "زنجان",
+      "center": "زنجان",
+      "matchedQuery": "زنجان",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "زنجان",
+          "select2Id": "293",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "گلستان",
+      "center": "گرگان",
+      "matchedQuery": "گرگان",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "گرگان",
+          "select2Id": "307",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "اردبیل",
+      "center": "اردبیل",
+      "matchedQuery": "اردبیل",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "اردبیل",
+          "select2Id": "315",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "قم",
+      "center": "قم",
+      "matchedQuery": "قم",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "قم",
+          "select2Id": "319",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "سمنان",
+      "center": "سمنان",
+      "matchedQuery": "سمنان",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "سمنان",
+          "select2Id": "326",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "چهارمحال و بختیاری",
+      "center": "شهرکرد",
+      "matchedQuery": "شهرکرد",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "شهرکرد",
+          "select2Id": "353",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "خراسان جنوبی",
+      "center": "بیرجند",
+      "matchedQuery": "بیرجند",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "بیرجند",
+          "select2Id": "374",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "خراسان شمالی",
+      "center": "بجنورد",
+      "matchedQuery": "بجنورد",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "بجنورد",
+          "select2Id": "395",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "کهگیلویه و بویراحمد",
+      "center": "یاسوج",
+      "matchedQuery": "بویراحمد",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "بویراحمد",
+          "select2Id": "405",
+          "id": null
+        }
+      ]
+    },
+    {
+      "province": "ایلام",
+      "center": "ایلام",
+      "matchedQuery": "ایلام",
+      "optionsCount": 1,
+      "options": [
+        {
+          "text": "ایلام",
+          "select2Id": "412",
+          "id": null
+        }
+      ]
+    }
+  ],
+  "allUniqueOptionsList": [
+    {
+      "text": "فارسان",
+      "select2Id": "51",
+      "id": null
+    },
+    {
+      "text": "مشهد",
+      "select2Id": "69",
+      "id": null
+    },
+    {
+      "text": "تهران",
+      "select2Id": "76",
+      "id": null
+    },
+    {
+      "text": "اصفهان",
+      "select2Id": "84",
+      "id": null
+    },
+    {
+      "text": "تبریز",
+      "select2Id": "106",
+      "id": null
+    },
+    {
+      "text": "ارومیه",
+      "select2Id": "129",
+      "id": null
+    },
+    {
+      "text": "اهواز",
+      "select2Id": "144",
+      "id": null
+    },
+    {
+      "text": "ساری",
+      "select2Id": "159",
+      "id": null
+    },
+    {
+      "text": "رشت",
+      "select2Id": "164",
+      "id": null
+    },
+    {
+      "text": "رشتخوار",
+      "select2Id": "165",
+      "id": null
+    },
+    {
+      "text": "کرمان",
+      "select2Id": "172",
+      "id": null
+    },
+    {
+      "text": "کرمانشاه",
+      "select2Id": "173",
+      "id": null
+    },
+    {
+      "text": "زاهدان",
+      "select2Id": "181",
+      "id": null
+    },
+    {
+      "text": "البرز",
+      "select2Id": "188",
+      "id": null
+    },
+    {
+      "text": "همدان",
+      "select2Id": "205",
+      "id": null
+    },
+    {
+      "text": "یزد",
+      "select2Id": "210",
+      "id": null
+    },
+    {
+      "text": "اراک",
+      "select2Id": "222",
+      "id": null
+    },
+    {
+      "text": "بندرعباس",
+      "select2Id": "240",
+      "id": null
+    },
+    {
+      "text": "خرم آباد",
+      "select2Id": "257",
+      "id": null
+    },
+    {
+      "text": "سنندج",
+      "select2Id": "272",
+      "id": null
+    },
+    {
+      "text": "بوشهر",
+      "select2Id": "279",
+      "id": null
+    },
+    {
+      "text": "قزوین",
+      "select2Id": "286",
+      "id": null
+    },
+    {
+      "text": "زنجان",
+      "select2Id": "293",
+      "id": null
+    },
+    {
+      "text": "گرگان",
+      "select2Id": "307",
+      "id": null
+    },
+    {
+      "text": "اردبیل",
+      "select2Id": "315",
+      "id": null
+    },
+    {
+      "text": "قم",
+      "select2Id": "319",
+      "id": null
+    },
+    {
+      "text": "سمنان",
+      "select2Id": "326",
+      "id": null
+    },
+    {
+      "text": "شهرکرد",
+      "select2Id": "353",
+      "id": null
+    },
+    {
+      "text": "بیرجند",
+      "select2Id": "374",
+      "id": null
+    },
+    {
+      "text": "بجنورد",
+      "select2Id": "395",
+      "id": null
+    },
+    {
+      "text": "بویراحمد",
+      "select2Id": "405",
+      "id": null
+    },
+    {
+      "text": "ایلام",
+      "select2Id": "412",
+      "id": null
+    }
+  ]
+}

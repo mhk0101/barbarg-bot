@@ -1,14 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { requirePermission } from '@/lib/auth/permissions'
 
 const DEFAULT_ROLES = [
   { name: 'owner', label: 'مالک', permissions: ['*'] },
-  { name: 'admin', label: 'مدیر', permissions: ['view_waybill', 'create_waybill', 'edit_waybill', 'delete_waybill', 'view_drivers', 'create_drivers', 'view_vehicles', 'create_vehicles', 'view_plates', 'create_plates', 'control_bot', 'view_queue', 'manage_workers', 'view_reports', 'export_excel', 'export_pdf'] },
+  { name: 'admin', label: 'مدیر', permissions: ['view_waybill', 'create_waybill', 'edit_waybill', 'delete_waybill', 'view_drivers', 'create_drivers', 'view_vehicles', 'create_vehicles', 'view_plates', 'create_plates', 'control_bot', 'view_queue', 'manage_workers', 'view_reports', 'export_excel', 'export_pdf', 'manage_settings', 'manage_users', 'view_logs', 'view_notifications'] },
   { name: 'operator', label: 'اپراتور', permissions: ['view_waybill', 'create_waybill', 'view_drivers'] },
   { name: 'viewer', label: 'مشاهده‌گر', permissions: ['view_waybill', 'view_reports'] },
 ]
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'manage_users')
+  if (!guard.ok) return guard.response
+
   try {
     const setting = await prisma.setting.findUnique({ where: { key: 'roles.list' } })
     if (setting && Array.isArray(setting.value)) {
@@ -26,6 +30,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const guard = await requirePermission(request, 'manage_users')
+  if (!guard.ok) return guard.response
+
   try {
     const body = await request.json()
     const { name, label, permissions } = body
@@ -60,6 +67,9 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
+  const guard = await requirePermission(request, 'manage_users')
+  if (!guard.ok) return guard.response
+
   try {
     const body = await request.json()
     const { name, label, permissions } = body
@@ -95,6 +105,9 @@ export async function PUT(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
+  const guard = await requirePermission(request, 'manage_users')
+  if (!guard.ok) return guard.response
+
   try {
     const { searchParams } = new URL(request.url)
     const name = searchParams.get('name')

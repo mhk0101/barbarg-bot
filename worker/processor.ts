@@ -51,6 +51,77 @@ const PERMANENT = /مختصات انتخابی نامعتبر|کد ملی|کدم
 /** سقف شروع مجدد داخل موتور (بلاک IP / سرور مشغول / WAF) */
 const MAX_RESTARTS = Number(process.env.BARBARG_MAX_RESTARTS || 20)
 
+/** بعد از ثبت موفق واقعی، برای همان ترکیب «اکانت + پلاک» این بازه صبر می‌کنیم. پیش‌فرض: ۳۰ تا ۳۵ دقیقه. */
+const SUCCESS_COOLDOWN_MIN_MS = Number(process.env.BARBARG_SUCCESS_COOLDOWN_MIN_MS || 30 * 60 * 1000)
+const SUCCESS_COOLDOWN_MAX_MS = Number(process.env.BARBARG_SUCCESS_COOLDOWN_MAX_MS || 35 * 60 * 1000)
+
+function normalisePlateForCooldown(v: string): string {
+  return String(v || '')
+    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+    .replace(/\s+/g, '')
+    .trim()
+}
+
+function cooldownKey(accountId: string, plateNumber: string): string {
+  const safePlate = normalisePlateForCooldown(plateNumber).replace(/[^\w\u0600-\u06FF-]/g, '')
+  return `automation.successCooldown.${accountId}.${safePlate}`
+}
+
+function fmtWait(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return m > 0 ? `${m} دقیقه و ${s} ثانیه` : `${s} ثانیه`
+}
+
+function randomSuccessCooldownMs(): number {
+  const min = Math.min(SUCCESS_COOLDOWN_MIN_MS, SUCCESS_COOLDOWN_MAX_MS)
+  const max = Math.max(SUCCESS_COOLDOWN_MIN_MS, SUCCESS_COOLDOWN_MAX_MS)
+  return Math.floor(min + Math.random() * (max - min + 1))
+}
+
+async function getPairCooldownUntil(accountId: string, plateNumber: string): Promise<Date | null> {
+  const rec = await prisma.setting.findUnique({ where: { key: cooldownKey(accountId, plateNumber) } }).catch(() => null)
+  const value = rec?.value as { until?: string } | null | undefined
+  const until = value?.until ? new Date(value.until) : null
+  return until && Number.isFinite(until.getTime()) ? until : null
+}
+
+async function setPairSuccessCooldown(accountId: string, plateNumber: string): Promise<{ until: Date; waitMs: number }> {
+  const waitMs = randomSuccessCooldownMs()
+  const until = new Date(Date.now() + waitMs)
+  await prisma.setting.upsert({
+    where: { key: cooldownKey(accountId, plateNumber) },
+    update: { value: { until: until.toISOString(), accountId, plateNumber, reason: 'success', updatedAt: new Date().toISOString() } },
+    create: { key: cooldownKey(accountId, plateNumber), value: { until: until.toISOString(), accountId, plateNumber, reason: 'success', updatedAt: new Date().toISOString() } },
+  }).catch(() => {})
+  return { until, waitMs }
+}
+
+async function waitForPairCooldown(taskId: string, accountId: string, plateNumber: string): Promise<boolean> {
+  const until = await getPairCooldownUntil(accountId, plateNumber)
+  if (!until) return true
+
+  let remaining = until.getTime() - Date.now()
+  if (remaining <= 0) return true
+
+  await log(taskId, 'warn', `برای همین اکانت و پلاک، ثبت موفق قبلی وجود دارد؛ شروع این عملیات ${fmtWait(remaining)} عقب می‌افتد`)
+
+  while (remaining > 0) {
+    const now = await prisma.job.findUnique({ where: { id: taskId }, select: { status: true } }).catch(() => null)
+    if (now?.status === 'cancelled') {
+      await log(taskId, 'warn', 'وظیفه هنگام انتظار فاصله بعد از ثبت موفق لغو شد')
+      return false
+    }
+    await new Promise((r) => setTimeout(r, Math.min(15_000, remaining)))
+    remaining = until.getTime() - Date.now()
+  }
+
+  await log(taskId, 'info', 'فاصله اجباری بعد از ثبت موفق قبلی تمام شد؛ عملیات شروع می‌شود')
+  return true
+}
+
 /**
  * ساخت اعلان برای زنگوله‌ی پنل.
  * فقط رویدادهای مهم — نه هر خطای کوچکی.
@@ -112,6 +183,23 @@ export async function processWaybillJob(taskId: string): Promise<void> {
     }
 
     await log(taskId, 'info', `پروفایل: ${profile.name} | پلاک: ${profile.plateNumber} | حساب: ${account.username}`)
+
+    // اگر برای همین «اکانت + پلاک» ثبت موفق قبلی داشته‌ایم، قبل از شروع عملیات بعدی ۵ تا ۱۵ دقیقه صبر می‌کنیم.
+    const cooldownOk = await waitForPairCooldown(taskId, account.id, profile.plateNumber)
+    if (!cooldownOk) {
+      await prisma.job.update({
+        where: { id: taskId },
+        data: { status: 'cancelled', error: 'هنگام انتظار فاصله اجباری لغو شد', completedAt: new Date() },
+      }).catch(() => {})
+      await prisma.automationResult.update({
+        where: { id: automationResult.id },
+        data: {
+          status: 'cancelled', resultMessage: 'هنگام انتظار فاصله اجباری لغو شد', resultType: 'warning',
+          finishedAt: new Date(), duration: Date.now() - startedAt,
+        },
+      }).catch(() => {})
+      return
+    }
 
     // ─── ۲) داده‌ی پروفایل → قالب موتور ───
     const data = engine.profileToData(profile)
@@ -188,7 +276,9 @@ export async function processWaybillJob(taskId: string): Promise<void> {
     if (result.success) {
       const message = result.trackingCode
         ? `ثبت شد — کد رهگیری ${result.trackingCode}`
-        : 'همه گام‌ها موفق (حالت آزمایشی — ثبت نهایی انجام نشد)'
+        : (DO_SUBMIT
+            ? 'ثبت با موفقیت انجام شد — رسید نهایی «سند حمل صادر گردید» در سایت نمایش داده شد (کد رهگیری خوانده نشد)'
+            : 'همه گام‌ها موفق (حالت آزمایشی — ثبت نهایی انجام نشد)')
 
       await log(taskId, 'success', message)
       await prisma.job.update({
@@ -206,10 +296,26 @@ export async function processWaybillJob(taskId: string): Promise<void> {
           duration: Date.now() - startedAt,
         },
       })
+      const cooldown = DO_SUBMIT
+        ? await setPairSuccessCooldown(account.id, profile.plateNumber)
+        : null
+      if (cooldown) {
+        await log(
+          taskId,
+          'success',
+          `فاصله بعد از ثبت موفق برای همین اکانت و پلاک تنظیم شد: ${fmtWait(cooldown.waitMs)} (تا ${cooldown.until.toLocaleString('fa-IR')})`,
+        )
+      }
+
+      const nextRunAfterSuccess = cooldown
+        ? (profile.nextRun && profile.nextRun > cooldown.until ? profile.nextRun : cooldown.until)
+        : profile.nextRun
+
       await prisma.registrationProfile.update({
         where: { id: profile.id },
         data: {
           lastRun: new Date(),
+          nextRun: nextRunAfterSuccess,
           totalRuns: { increment: 1 },
           successfulRuns: { increment: 1 },
           lastError: null,

@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs'
+import { createHmac, timingSafeEqual } from 'crypto'
 import { prisma } from '@/lib/prisma'
 
 const JWT_SECRET = process.env.JWT_SECRET || 'barbarg-bot-jwt-secret-2024'
@@ -7,8 +8,8 @@ const REFRESH_TOKEN_EXPIRY = '30d'
 
 interface TokenPayload { userId: string; email: string; role: string }
 
-function base64url(str: string): string {
-  return Buffer.from(str).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+function base64url(input: string | Buffer): string {
+  return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
 function base64urlDecode(str: string): string {
@@ -17,9 +18,18 @@ function base64urlDecode(str: string): string {
   return Buffer.from(str, 'base64').toString()
 }
 
-async function hmacSign(data: string, secret: string): Promise<string> {
-  const { createHmac } = await import('node:crypto')
-  return createHmac('sha256', secret).update(data).digest('base64')
+function sign(data: string): string {
+  return base64url(createHmac('sha256', JWT_SECRET).update(data).digest())
+}
+
+function safeEqual(a: string, b: string): boolean {
+  try {
+    const ba = Buffer.from(a)
+    const bb = Buffer.from(b)
+    return ba.length === bb.length && timingSafeEqual(ba, bb)
+  } catch {
+    return false
+  }
 }
 
 function createToken(payload: TokenPayload, expiresIn: string): string {
@@ -27,15 +37,21 @@ function createToken(payload: TokenPayload, expiresIn: string): string {
   const now = Math.floor(Date.now() / 1000)
   const exp = expiresIn === '1h' ? now + 3600 : now + 30 * 24 * 3600
   const body = base64url(JSON.stringify({ ...payload, iat: now, exp }))
-  return `${header}.${body}.signature`
+  const signature = sign(`${header}.${body}`)
+  return `${header}.${body}.${signature}`
 }
 
 export async function verifyToken(token: string): Promise<TokenPayload | null> {
   try {
     const parts = token.split('.')
     if (parts.length !== 3) return null
-    const payload = JSON.parse(base64urlDecode(parts[1]))
+    const [header, body, signature] = parts
+    const expected = sign(`${header}.${body}`)
+    if (!safeEqual(signature, expected)) return null
+
+    const payload = JSON.parse(base64urlDecode(body))
     if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) return null
+    if (!payload.userId || !payload.email || !payload.role) return null
     return { userId: payload.userId, email: payload.email, role: payload.role }
   } catch { return null }
 }
@@ -58,11 +74,11 @@ export async function login(email: string, password: string, rememberMe: boolean
 
   await prisma.user.update({ where: { id: user.id }, data: { failedAttempts: 0, lockedUntil: null, lastLogin: new Date(), lastActivity: new Date() } })
 
-  const accessToken = createToken({ userId: user.id, email: user.email, role: user.role }, '1h')
-  const refreshToken = createToken({ userId: user.id, email: user.email, role: user.role }, '30d')
+  const accessToken = createToken({ userId: user.id, email: user.email, role: user.role }, rememberMe ? REFRESH_TOKEN_EXPIRY : ACCESS_TOKEN_EXPIRY)
+  const refreshToken = createToken({ userId: user.id, email: user.email, role: user.role }, REFRESH_TOKEN_EXPIRY)
 
   await prisma.refreshToken.create({ data: { userId: user.id, token: refreshToken, expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000) } })
-  await prisma.session.create({ data: { userId: user.id, token: accessToken, ipAddress: ip, userAgent: ua, expiresAt: new Date(Date.now() + 3600 * 1000) } })
+  await prisma.session.create({ data: { userId: user.id, token: accessToken, ipAddress: ip, userAgent: ua, expiresAt: new Date(Date.now() + (rememberMe ? 30 * 24 * 3600 * 1000 : 3600 * 1000)) } })
 
   await prisma.auditLog.create({ data: { userId: user.id, action: 'login', resource: 'auth', ipAddress: ip, userAgent: ua } })
 
@@ -78,7 +94,7 @@ export async function refreshToken(token: string) {
   const user = await prisma.user.findUnique({ where: { id: payload.userId } })
   if (!user || user.status !== 'active') return { error: 'کاربر غیرفعال' }
 
-  const newAccessToken = createToken({ userId: user.id, email: user.email, role: user.role }, '1h')
+  const newAccessToken = createToken({ userId: user.id, email: user.email, role: user.role }, ACCESS_TOKEN_EXPIRY)
   return { accessToken: newAccessToken }
 }
 

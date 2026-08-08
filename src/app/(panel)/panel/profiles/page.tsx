@@ -65,6 +65,101 @@ interface Stats {
   totalRuns: number; successfulRuns: number; failedRuns: number
 }
 
+const MANUAL_LOCATION_TAG = '[manual-location]'
+const MAP_JSON_START = '[map-location-json]'
+const MAP_JSON_END = '[/map-location-json]'
+
+function hasManualLocation(notes?: string | null) {
+  return String(notes || '').includes(MANUAL_LOCATION_TAG)
+}
+
+function hasSavedMapLocation(notes?: string | null) {
+  const t = String(notes || '')
+  return t.includes(MAP_JSON_START) && t.includes(MAP_JSON_END)
+}
+
+function parseSavedMapLocations(notes?: string | null): {
+  origin?: { lat?: number; lon?: number; address?: string; province?: string; county?: string }
+  destination?: { lat?: number; lon?: number; address?: string; province?: string; county?: string }
+} | null {
+  const t = String(notes || '')
+  const i = t.indexOf(MAP_JSON_START)
+  const j = t.indexOf(MAP_JSON_END)
+  if (i < 0 || j <= i) return null
+  try {
+    return JSON.parse(t.slice(i + MAP_JSON_START.length, j).trim())
+  } catch {
+    return null
+  }
+}
+
+function stripMapLocationBlock(notes: string) {
+  const t = String(notes || '')
+  const i = t.indexOf(MAP_JSON_START)
+  const j = t.indexOf(MAP_JSON_END)
+  if (i >= 0 && j > i) return (t.slice(0, i) + t.slice(j + MAP_JSON_END.length)).trim()
+  return t.trim()
+}
+
+function validLatLon(lat: unknown, lon: unknown): boolean {
+  const la = Number(String(lat ?? '').trim())
+  const lo = Number(String(lon ?? '').trim())
+  return Number.isFinite(la) && Number.isFinite(lo) && la >= -90 && la <= 90 && lo >= -180 && lo <= 180
+}
+
+function parseCoordinatePair(v: unknown): { lat: string; lon: string } | null {
+  const s = String(v ?? '').trim()
+  if (!s) return null
+  const nums = s
+    .replace(/[؛;]/g, ',')
+    .match(/[-+]?\d+(?:\.\d+)?/g)
+  if (!nums || nums.length < 2) return null
+  const lat = nums[0]
+  const lon = nums[1]
+  return validLatLon(lat, lon) ? { lat, lon } : null
+}
+
+function formatCoordinatePair(lat?: unknown, lon?: unknown): string {
+  if (lat === undefined || lat === null || lon === undefined || lon === null) return ''
+  if (!validLatLon(lat, lon)) return ''
+  return `${lat}, ${lon}`
+}
+
+function mapLocationBlockFromForm(form: Record<string, string | number>) {
+  const originPair = parseCoordinatePair(form.originCoordinate) ||
+    (validLatLon(form.originLat, form.originLon) ? { lat: String(form.originLat), lon: String(form.originLon) } : null)
+  const destPair = parseCoordinatePair(form.destCoordinate) ||
+    (validLatLon(form.destLat, form.destLon) ? { lat: String(form.destLat), lon: String(form.destLon) } : null)
+  if (!originPair || !destPair) return null
+  const originLat = originPair.lat
+  const originLon = originPair.lon
+  const destLat = destPair.lat
+  const destLon = destPair.lon
+  const now = new Date().toISOString()
+  return {
+    origin: {
+      lat: Number(originLat), lon: Number(originLon),
+      address: String(form.originAddress || '').trim(),
+      province: String(form.originProvince || '').trim(),
+      county: String(form.originCity || '').trim(),
+      savedAt: now,
+    },
+    destination: {
+      lat: Number(destLat), lon: Number(destLon),
+      address: String(form.destAddress || '').trim(),
+      province: String(form.destProvince || '').trim(),
+      county: String(form.destCity || '').trim(),
+      savedAt: now,
+    },
+    updatedAt: now,
+    source: 'profile-coordinate-input',
+  }
+}
+
+function stripManualLocationTag(notes: string) {
+  return String(notes || '').replace(MANUAL_LOCATION_TAG, '').replace(/\s{2,}/g, ' ').trim()
+}
+
 const emptyForm: Record<string, string | number> = {
   name: '', senderType: '', senderFirstName: '', senderLastName: '',
   senderMobile: '', senderPhone: '', senderNationalId: '', senderPostalCode: '',
@@ -80,7 +175,9 @@ const emptyForm: Record<string, string | number> = {
   cargoName: '', cargoCategory: '', cargoPackaging: '',
   cargoWeight: '', cargoQuantity: '', cargoValue: '',
   originProvince: '', originCity: '', originAddress: '', originPostalCode: '',
+  originLat: '', originLon: '', originCoordinate: '',
   destProvince: '', destCity: '', destAddress: '', destPostalCode: '',
+  destLat: '', destLon: '', destCoordinate: '',
   advanceFare: '', fareType: '', freightCost: '', transportInsurance: '',
   totalAmount: '', insuranceRate: '', insuranceAmount: '', paymentMethod: '',
   captchaAnswer: '',
@@ -190,9 +287,11 @@ const FIELD_RULES: Array<{
 ]
 
 /** خطای هر فیلد را برمی‌گرداند (خالی بودن یا نامعتبر بودن) */
-function validateForm(form: Record<string, unknown>, autoProvince = false): Record<string, string> {
+function validateForm(form: Record<string, unknown>, autoProvince = false, manualLocation = false): Record<string, string> {
   const errs: Record<string, string> = {}
   for (const r of FIELD_RULES) {
+    /* در حالت نقشه‌ای، فیلدهای دستی مبدا/مقصد اجباری و فعال نیستند */
+    if (!manualLocation && ['originProvince', 'originCity', 'destProvince', 'destCity'].includes(r.key)) continue
     /* اگر استان از پلاک تشخیص داده می‌شود، پر کردنش اجباری نیست */
     if (autoProvince && (r.key === 'originProvince' || r.key === 'destProvince')) continue
     const v = String(form[r.key] ?? '').trim()
@@ -207,37 +306,35 @@ function validateForm(form: Record<string, unknown>, autoProvince = false): Reco
 
 /* نگاشت کد ایران پلاک به استان — باید با step1-engine.js یکی باشد */
 const IRAN_CODE_TO_PROVINCE: Record<string, string> = {
-  '10': 'خوزستان', '11': 'مرکزی', '12': 'خراسان رضوی', '13': 'اصفهان',
-  '14': 'خوزستان', '15': 'آذربایجان شرقی', '16': 'گیلان', '17': 'کرمان',
-  '18': 'خوزستان', '19': 'فارس', '20': 'خراسان رضوی', '21': 'تهران',
-  '22': 'تهران', '23': 'مرکزی', '24': 'همدان', '25': 'اصفهان',
-  '26': 'قم', '27': 'خراسان رضوی', '28': 'گیلان', '29': 'تهران',
-  '30': 'خوزستان', '31': 'البرز', '32': 'آذربایجان شرقی', '33': 'تهران',
-  '34': 'قزوین', '35': 'سمنان', '36': 'کرمانشاه', '37': 'اردبیل',
-  '38': 'چهارمحال و بختیاری', '39': 'تهران', '40': 'خراسان رضوی',
-  '41': 'گیلان', '42': 'لرستان', '43': 'گیلان', '44': 'مازندران',
-  '45': 'زنجان', '46': 'مازندران', '47': 'مازندران', '48': 'گلستان',
-  '49': 'سیستان و بلوچستان', '51': 'خراسان رضوی', '52': 'همدان',
-  '53': 'آذربایجان شرقی', '54': 'خراسان شمالی', '55': 'مرکزی',
-  '56': 'سیستان و بلوچستان', '57': 'سیستان و بلوچستان', '58': 'آذربایجان غربی',
-  '59': 'خوزستان', '61': 'خوزستان', '62': 'مرکزی', '63': 'خوزستان',
-  '64': 'لرستان', '65': 'آذربایجان غربی', '66': 'کردستان', '67': 'کرمانشاه',
-  '68': 'ایلام', '69': 'مازندران', '71': 'فارس', '72': 'فارس',
-  '73': 'کهگیلویه و بویر احمد', '74': 'فارس', '75': 'بوشهر',
-  '76': 'کرمان', '77': 'هرمزگان', '78': 'کرمان', '79': 'یزد',
-  '81': 'اصفهان', '82': 'اصفهان', '83': 'اصفهان', '84': 'اصفهان',
-  '85': 'اصفهان', '86': 'اصفهان', '87': 'یزد', '88': 'چهارمحال و بختیاری',
-  '89': 'یزد', '91': 'خراسان رضوی', '92': 'خراسان رضوی', '93': 'خراسان رضوی',
-  '94': 'خراسان جنوبی', '95': 'خراسان رضوی', '96': 'خراسان شمالی',
-  '97': 'خراسان رضوی', '98': 'سیستان و بلوچستان', '99': 'خراسان رضوی',
+  // مبنا: تشخیص استان از عدد اول پلاک در قالب پنل/پروفایل.
+  '10': 'تهران', '11': 'تهران', '12': 'خراسان رضوی', '13': 'اصفهان',
+  '14': 'خوزستان', '15': 'آذربایجان شرقی', '16': 'قم', '17': 'آذربایجان غربی',
+  '18': 'همدان', '19': 'کرمانشاه', '20': 'تهران', '21': 'البرز',
+  '22': 'تهران', '23': 'اصفهان', '24': 'خوزستان', '25': 'آذربایجان شرقی',
+  '26': 'خراسان شمالی', '27': 'آذربایجان غربی', '28': 'همدان', '29': 'کرمانشاه',
+  '30': 'البرز', '31': 'لرستان', '32': 'خراسان رضوی', '33': 'تهران',
+  '34': 'خوزستان', '35': 'آذربایجان شرقی', '36': 'خراسان رضوی', '37': 'آذربایجان غربی',
+  '38': 'البرز', '39': 'کرمان', '40': 'تهران', '41': 'لرستان',
+  '42': 'خراسان رضوی', '43': 'اصفهان', '44': 'تهران', '45': 'کرمان',
+  '46': 'گیلان', '47': 'مرکزی', '48': 'بوشهر', '49': 'کهگیلویه و بویر احمد',
+  '51': 'کردستان', '52': 'خراسان جنوبی', '53': 'اصفهان', '54': 'یزد',
+  '55': 'تهران', '56': 'گیلان', '57': 'مرکزی', '58': 'بوشهر',
+  '59': 'گلستان', '61': 'کردستان', '62': 'مازندران', '63': 'فارس',
+  '64': 'یزد', '65': 'کرمان', '66': 'تهران', '67': 'اصفهان',
+  '68': 'البرز', '69': 'گلستان', '71': 'چهارمحال و بختیاری', '72': 'مازندران',
+  '73': 'فارس', '74': 'خراسان رضوی', '75': 'کرمان', '76': 'گیلان',
+  '77': 'تهران', '78': 'تهران', '79': 'قزوین', '81': 'چهارمحال و بختیاری',
+  '82': 'مازندران', '83': 'فارس', '84': 'هرمزگان', '85': 'سیستان و بلوچستان',
+  '86': 'سمنان', '87': 'زنجان', '88': 'تهران', '89': 'قزوین',
+  '91': 'اردبیل', '92': 'مازندران', '93': 'فارس', '94': 'هرمزگان',
+  '95': 'سیستان و بلوچستان', '96': 'سمنان', '97': 'زنجان', '98': 'ایلام',
+  '99': 'تهران',
 }
-
-/** استان را از کد ایران پلاک حدس می‌زند (رقم آخر) */
+/** استان را از عدد اول پلاک تشخیص می‌دهد؛ مثال: 36 ع 193 29 ⇒ 36 ⇒ خراسان رضوی */
 function provinceFromPlateUI(plate: string): string | null {
-  const t = String(plate || '').replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0))
-  const nums = t.match(/\d+/g) || []
-  const iran = nums[2] || ''
-  return IRAN_CODE_TO_PROVINCE[iran] || null
+  const p = parsePlateParts(plate)
+  const code = p.two || p.iran
+  return IRAN_CODE_TO_PROVINCE[code] || null
 }
 
 const PACKAGING_TYPES = [
@@ -261,16 +358,19 @@ export default function ProfilesPage() {
   const [importing, setImporting] = useState(false)
   const [importedFrom, setImportedFrom] = useState<string | null>(null)
   const [autoImport, setAutoImport] = useState(true)   // پیش‌فرض: خودکار
+  const [capturingMapId, setCapturingMapId] = useState<string | null>(null)
 
   /* اعتبارسنجی زنده.
      touched = فیلدهایی که کاربر دست زده یا تلاش کرده ذخیره کند.
      بدون این، فرم خالی از همان اول قرمز می‌شد و آزاردهنده بود. */
   /* تشخیص خودکار استان از پلاک — پیش‌فرض روشن */
   const [autoProvince, setAutoProvince] = useState(true)
+  const [useManualLocation, setUseManualLocation] = useState(false)
+  const [useCoordinateInputs, setUseCoordinateInputs] = useState(true)
   const [touched, setTouched] = useState<Record<string, boolean>>({})
   const [showAllErrors, setShowAllErrors] = useState(false)
 
-  const errors = validateForm(form as Record<string, unknown>, autoProvince)
+  const errors = validateForm(form as Record<string, unknown>, autoProvince, useManualLocation)
   const errorCount = Object.keys(errors).length
 
   /** خطای یک فیلد — فقط اگر کاربر دست زده یا دکمه‌ی ذخیره را زده */
@@ -417,6 +517,8 @@ export default function ProfilesPage() {
     setImportedFrom(null)
     setAutoImport(true)      // پیش‌فرض همیشه خودکار
     setAutoProvince(true)
+    setUseManualLocation(false)
+    setUseCoordinateInputs(true)
     setTouched({})
     setShowAllErrors(false)
     setDialogOpen(true)
@@ -424,7 +526,10 @@ export default function ProfilesPage() {
 
   const openEdit = (p: Profile) => {
     setEditProfile(p)
+    const savedMap = parseSavedMapLocations(p.notes)
     setAutoProvince(String((p as { notes?: string }).notes || '').includes('[auto-province]'))
+    setUseManualLocation(hasManualLocation(p.notes))
+    setUseCoordinateInputs(true)
     setTouched({})
     setShowAllErrors(false)
     setForm({
@@ -453,8 +558,12 @@ export default function ProfilesPage() {
       cargoQuantity: p.cargoQuantity || '', cargoValue: p.cargoValue || '',
       originProvince: p.originProvince, originCity: p.originCity,
       originAddress: p.originAddress || '', originPostalCode: p.originPostalCode || '',
+      originLat: savedMap?.origin?.lat ?? '', originLon: savedMap?.origin?.lon ?? '',
+      originCoordinate: formatCoordinatePair(savedMap?.origin?.lat, savedMap?.origin?.lon),
       destProvince: p.destProvince, destCity: p.destCity,
       destAddress: p.destAddress || '', destPostalCode: p.destPostalCode || '',
+      destLat: savedMap?.destination?.lat ?? '', destLon: savedMap?.destination?.lon ?? '',
+      destCoordinate: formatCoordinatePair(savedMap?.destination?.lat, savedMap?.destination?.lon),
       advanceFare: p.advanceFare || '', fareType: p.fareType || '',
       freightCost: p.freightCost || '', transportInsurance: p.transportInsurance || '',
       totalAmount: p.totalAmount || '', insuranceRate: p.insuranceRate || '',
@@ -471,7 +580,7 @@ export default function ProfilesPage() {
   const handleSave = async () => {
     /* اعتبارسنجی کامل — همه‌ی خطاها روی فیلدها نمایان می‌شوند */
     setShowAllErrors(true)
-    const errs = validateForm(form as Record<string, unknown>, autoProvince)
+    const errs = validateForm(form as Record<string, unknown>, autoProvince, useManualLocation)
     const keys = Object.keys(errs)
     if (keys.length > 0) {
       const first = FIELD_RULES.find((r) => errs[r.key])
@@ -497,8 +606,10 @@ export default function ProfilesPage() {
       ['driverName', 'نام راننده', 3],
       ['driverNationalId', 'کد ملی راننده', 3],
       ['cargoName', 'نام کالا', 4],
-      ['originCity', 'شهر مبدا', 5],
-      ['destCity', 'شهر مقصد', 5],
+      ...(useManualLocation ? [
+        ['originCity', 'شهر مبدا', 5] as [string, string, number],
+        ['destCity', 'شهر مقصد', 5] as [string, string, number],
+      ] : []),
       /* «استان» و «آدرس» عمدا از لیست الزامی حذف شدند:
          استان در حالت خودکار از پلاک تشخیص داده می‌شود و
          آدرس را نقشه‌ی خود سایت بعد از انتخاب محله پر می‌کند. */
@@ -514,24 +625,57 @@ export default function ProfilesPage() {
       setStep(missing[0][2] - 1)
       return
     }
+
+    const originCoordText = String((form as Record<string, unknown>).originCoordinate ?? '').trim()
+    const destCoordText = String((form as Record<string, unknown>).destCoordinate ?? '').trim()
+    const hasAnyCoordinate = !!(originCoordText || destCoordText)
+    const hasAllCoordinates = !!(originCoordText && destCoordText)
+    if (!useManualLocation && useCoordinateInputs && hasAnyCoordinate && (!hasAllCoordinates || !parseCoordinatePair(originCoordText) || !parseCoordinatePair(destCoordText))) {
+      toast.error('مختصات مبدا و مقصد را کامل و معتبر وارد کنید', {
+        description: 'هر ورودی را به صورت «latitude, longitude» وارد کنید؛ مثال: 30.286924, 57.039170',
+      })
+      setStep(4)
+      return
+    }
+
     setSaving(true)
     try {
       /* انتخاب «تشخیص خودکار استان» در notes ذخیره می‌شود
          تا نیاز به تغییر دیتابیس (migration) نباشد. */
       const TAG = '[auto-province]'
-      const cleanNotes = String(form.notes || '').replace(TAG, '').trim()
+      let cleanNotes = String(form.notes || '').replace(TAG, '').trim()
+      cleanNotes = stripManualLocationTag(cleanNotes)
+      const coordinateMapBlock = !useManualLocation && useCoordinateInputs
+        ? mapLocationBlockFromForm(form as Record<string, string | number>)
+        : null
+      if (coordinateMapBlock) cleanNotes = stripMapLocationBlock(cleanNotes)
       /* در حالت خودکار، استانِ تشخیص‌داده‌شده از پلاک همین‌جا در
          پروفایل ذخیره می‌شود — هم API فیلد الزامی را می‌پذیرد، هم
          موتور (گام ۵/۶) استان را از خود پنل برمی‌دارد. */
       const detectedProv = autoProvince
         ? provinceFromPlateUI(String(form.plateNumber || '')) || ''
         : ''
+      const noteTags = [autoProvince ? TAG : '', useManualLocation ? MANUAL_LOCATION_TAG : '']
+        .filter(Boolean)
+        .join(' ')
+      const mapBlockText = coordinateMapBlock
+        ? `${MAP_JSON_START}${JSON.stringify(coordinateMapBlock)}${MAP_JSON_END}`
+        : ''
+      const finalNotes = `${noteTags}${noteTags && cleanNotes ? ' ' : ''}${cleanNotes}${(noteTags || cleanNotes) && mapBlockText ? '\n' : ''}${mapBlockText}`.trim()
       const body = {
         ...form,
-        originProvince: autoProvince ? (detectedProv || String(form.originProvince || '')) : form.originProvince,
-        destProvince: autoProvince ? (detectedProv || String(form.destProvince || '')) : form.destProvince,
+        // در حالت نقشه‌ای این فیلدها در فرم نمایش داده نمی‌شوند، اما چون اسکیما nullable نیست
+        // مقدار موقت می‌گذاریم؛ بعد از دکمه «نقشه» با آدرس واقعی سامانه جایگزین می‌شوند.
+        originProvince: useManualLocation
+          ? (autoProvince ? (detectedProv || String(form.originProvince || '')) : form.originProvince)
+          : (detectedProv || String(form.originProvince || '') || 'از نقشه'),
+        originCity: useManualLocation ? form.originCity : (String(form.originCity || '') || 'از نقشه'),
+        destProvince: useManualLocation
+          ? (autoProvince ? (detectedProv || String(form.destProvince || '')) : form.destProvince)
+          : (detectedProv || String(form.destProvince || '') || 'از نقشه'),
+        destCity: useManualLocation ? form.destCity : (String(form.destCity || '') || 'از نقشه'),
         accountId: form.accountId || null,
-        notes: autoProvince ? `${TAG} ${cleanNotes}`.trim() : cleanNotes,
+        notes: finalNotes,
       }
       if (editProfile) {
         const res = await fetch(`/api/registration-profiles/${editProfile.id}`, {
@@ -565,6 +709,72 @@ export default function ProfilesPage() {
       await fetch(`/api/registration-profiles/${id}/toggle`, { method: 'POST' })
       toast.success('تغییر وضعیت'); fetchProfiles(); fetchStats()
     } catch { toast.error('خطا در تغییر وضعیت') }
+  }
+
+  const handleCaptureMap = async (profile: Profile) => {
+    if (capturingMapId) return
+    const ok = window.confirm(
+      'مرورگر اتوماسیون باز می‌شود، از ابتدا وارد سامانه باربرگ می‌شود و تا گام ۵ و ۶ جلو می‌رود.\n' +
+      'در گام ۵ مبدا و در گام ۶ مقصد را روی نقشه واقعی سامانه انتخاب کنید.\n' +
+      'بعد از ذخیره هر دو نقطه، مرورگر بسته می‌شود. ادامه می‌دهید؟',
+    )
+    if (!ok) return
+
+    setCapturingMapId(profile.id)
+    const tid = toast.loading('شروع انتخاب مبدا و مقصد از نقشه سامانه...', {
+      description: 'مرورگر باز می‌شود؛ لطفاً در مرورگر بازشده نقاط مبدا و مقصد را انتخاب کنید.',
+      duration: Infinity,
+    })
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 25 * 60 * 1000)
+    try {
+      const res = await fetch(`/api/registration-profiles/${profile.id}/capture-map`, { method: 'POST', signal: controller.signal })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || 'انتخاب نقشه ناموفق بود')
+      }
+      toast.dismiss(tid)
+      toast.success('مبدا و مقصد از نقشه سامانه ذخیره شد', {
+        description: `${json.mapLocations?.origin?.address || 'مبدا'} ← ${json.mapLocations?.destination?.address || 'مقصد'}`,
+        duration: 8000,
+      })
+      if (editProfile?.id === profile.id && json.profile) {
+        const up = json.profile as Profile
+        setEditProfile(up)
+        setForm((prev) => ({
+          ...prev,
+          originProvince: up.originProvince || '',
+          originCity: up.originCity || '',
+          originAddress: up.originAddress || '',
+          originLat: json.mapLocations?.origin?.lat ?? prev.originLat ?? '',
+          originLon: json.mapLocations?.origin?.lon ?? prev.originLon ?? '',
+          originCoordinate: formatCoordinatePair(json.mapLocations?.origin?.lat, json.mapLocations?.origin?.lon) || String(prev.originCoordinate || ''),
+          destProvince: up.destProvince || '',
+          destCity: up.destCity || '',
+          destAddress: up.destAddress || '',
+          destLat: json.mapLocations?.destination?.lat ?? prev.destLat ?? '',
+          destLon: json.mapLocations?.destination?.lon ?? prev.destLon ?? '',
+          destCoordinate: formatCoordinatePair(json.mapLocations?.destination?.lat, json.mapLocations?.destination?.lon) || String(prev.destCoordinate || ''),
+          notes: up.notes || '',
+        }))
+        setUseManualLocation(hasManualLocation(up.notes))
+      }
+      fetchProfiles(); fetchStats()
+    } catch (e) {
+      const message = e instanceof Error && e.name === 'AbortError'
+        ? 'مهلت عملیات انتخاب نقشه تمام شد یا ارتباط با سرور قطع شد'
+        : (e instanceof Error ? e.message : 'عملیات ناموفق بود')
+      toast.dismiss(tid)
+      toast.error('خطا در انتخاب نقشه', {
+        description: message,
+        duration: 10000,
+      })
+    } finally {
+      clearTimeout(timeoutId)
+      setCapturingMapId(null)
+      // کمربند ایمنی: اگر به هر دلیل toast لودینگ در Sonner باقی مانده بود، حذفش کن.
+      toast.dismiss(tid)
+    }
   }
 
   const updateField = (key: string, value: string | number) => {
@@ -660,6 +870,16 @@ export default function ProfilesPage() {
                     <td className="py-3 text-xs text-muted-foreground">{p.lastRun ? new Date(p.lastRun).toLocaleString('fa') : '-'}</td>
                     <td className="py-3">
                       <div className="flex gap-1">
+                        <Button
+                          size="sm"
+                          variant={hasSavedMapLocation(p.notes) && !hasManualLocation(p.notes) ? 'default' : 'outline'}
+                          onClick={() => handleCaptureMap(p)}
+                          disabled={!!capturingMapId}
+                          title="ثبت / بروزرسانی مبدا و مقصد از نقشه واقعی سامانه"
+                        >
+                          {capturingMapId === p.id ? <Loader2 className="size-4 animate-spin" /> : <MapPin className="size-4" />}
+                          <span className="text-xs">نقشه</span>
+                        </Button>
                         <Button size="sm" variant="ghost" onClick={() => openEdit(p)}><Pencil className="size-4" /></Button>
                         <Button size="sm" variant="ghost" onClick={() => handleToggle(p.id)}>
                           {p.status === 'active' ? <PowerOff className="size-4" /> : <Power className="size-4" />}
@@ -883,64 +1103,166 @@ export default function ProfilesPage() {
               <div className="space-y-4">
                 <SectionTitle title="مرحله ۵: مبدا، مقصد و کرایه" />
 
-                {/* ── انتخاب روش تعیین استان ── */}
-                <div className="rounded-xl border border-blue-500/25 bg-blue-500/5 p-3 space-y-2">
-                  <label className="flex cursor-pointer items-start gap-2">
-                    <input
-                      type="checkbox"
-                      className="mt-0.5 size-4 accent-blue-500"
-                      checked={autoProvince}
-                      onChange={(e) => setAutoProvince(e.target.checked)}
-                    />
-                    <span className="text-sm">
-                      <b>تشخیص خودکار استان از روی پلاک</b>
-                      <span className="block text-[11px] leading-5 text-muted-foreground">
-                        {autoProvince
-                          ? (() => {
-                              const g = provinceFromPlateUI(form.plateNumber as string)
-                              return g
-                                ? `از پلاک «${form.plateNumber}» استان «${g}» تشخیص داده شد. فقط شهر/محله را پر کنید.`
-                                : 'پلاک را در مرحله ۳ کامل کنید تا استان تشخیص داده شود.'
-                            })()
-                          : 'خاموش است — استان را خودتان انتخاب کنید.'}
+                {/* ── انتخاب روش مبدا/مقصد ── */}
+                <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-start gap-2 text-sm">
+                      <MapPin className="mt-0.5 size-4 text-emerald-500" />
+                      <div>
+                        <b>روش پیش‌فرض: استفاده از مبدا و مقصد ذخیره‌شده از نقشه سامانه</b>
+                        <p className="text-[11px] leading-5 text-muted-foreground">
+                          برای ثبت/بروزرسانی نقشه، از دکمه 📍 در لیست پروفایل‌ها استفاده کنید؛ اتوماسیون از ابتدا لاگین می‌کند، تا گام ۵ و ۶ می‌رود و آخرین کلیک شما را ذخیره می‌کند.
+                        </p>
+                      </div>
+                    </div>
+                    <label className="flex cursor-pointer items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        className="size-4 accent-amber-500"
+                        checked={useManualLocation}
+                        onChange={(e) => setUseManualLocation(e.target.checked)}
+                      />
+                      <span>استفاده از روش دستی استان/شهر به جای نقشه ذخیره‌شده</span>
+                    </label>
+                  </div>
+                </div>
+
+                {useManualLocation ? (
+                  <>
+                    {/* ── انتخاب روش تعیین استان ── */}
+                    <div className="rounded-xl border border-blue-500/25 bg-blue-500/5 p-3 space-y-2">
+                      <label className="flex cursor-pointer items-start gap-2">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 size-4 accent-blue-500"
+                          checked={autoProvince}
+                          onChange={(e) => setAutoProvince(e.target.checked)}
+                        />
+                        <span className="text-sm">
+                          <b>تشخیص خودکار استان از روی پلاک</b>
+                          <span className="block text-[11px] leading-5 text-muted-foreground">
+                            {autoProvince
+                              ? (() => {
+                                  const g = provinceFromPlateUI(form.plateNumber as string)
+                                  return g
+                                    ? `از پلاک «${form.plateNumber}» استان «${g}» تشخیص داده شد. فقط شهر/محله را پر کنید.`
+                                    : 'پلاک را در مرحله ۳ کامل کنید تا استان تشخیص داده شود.'
+                                })()
+                              : 'خاموش است — استان را خودتان انتخاب کنید.'}
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+
+                    <p className="text-sm font-semibold text-muted-foreground">مبدا بارگیری (ورود دستی)</p>
+                    <div className="grid grid-cols-2 gap-4">
+                      {autoProvince ? (
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">استان مبدا (خودکار)</Label>
+                          <div className="flex h-9 items-center rounded-md border border-dashed border-blue-500/40 bg-blue-500/5 px-3 text-sm">
+                            {provinceFromPlateUI(form.plateNumber as string) || <span className="text-muted-foreground">از پلاک تشخیص داده می‌شود</span>}
+                          </div>
+                        </div>
+                      ) : (
+                        <FieldSelect label="استان مبدا *" value={form.originProvince as string} onChange={(v) => updateField('originProvince', v)} options={PROVINCE_LIST} placeholder="انتخاب کنید" error={errOf('originProvince')} />
+                      )}
+                      <Field label="شهر مبدا *" value={form.originCity as string} onChange={(v) => updateField('originCity', v)} placeholder="شهر، محله یا روستا — مثلا سیرجان، ریشهر" error={errOf('originCity')} />
+                      <Field label="آدرس مبدا" value={form.originAddress as string} onChange={(v) => updateField('originAddress', v)} placeholder="خیابان، کوچه، پلاک" error={errOf('originAddress')} />
+                      <Field label="کدپستی مبدا" value={form.originPostalCode as string} onChange={(v) => updateField('originPostalCode', v)} placeholder="اختیاری" />
+                    </div>
+
+                    <p className="text-sm font-semibold text-muted-foreground pt-2">مقصد تخلیه (ورود دستی)</p>
+                    <div className="grid grid-cols-2 gap-4">
+                      {autoProvince ? (
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-muted-foreground">استان مقصد (خودکار)</Label>
+                          <div className="flex h-9 items-center rounded-md border border-dashed border-blue-500/40 bg-blue-500/5 px-3 text-sm">
+                            {provinceFromPlateUI(form.plateNumber as string) || <span className="text-muted-foreground">از پلاک تشخیص داده می‌شود</span>}
+                          </div>
+                        </div>
+                      ) : (
+                        <FieldSelect label="استان مقصد *" value={form.destProvince as string} onChange={(v) => updateField('destProvince', v)} options={PROVINCE_LIST} placeholder="انتخاب کنید" error={errOf('destProvince')} />
+                      )}
+                      <Field label="شهر مقصد *" value={form.destCity as string} onChange={(v) => updateField('destCity', v)} placeholder="شهر، محله یا روستا — مثلا سیرجان، ریشهر" error={errOf('destCity')} />
+                      <Field label="آدرس مقصد" value={form.destAddress as string} onChange={(v) => updateField('destAddress', v)} placeholder="خیابان، کوچه، پلاک" error={errOf('destAddress')} />
+                      <Field label="کدپستی مقصد" value={form.destPostalCode as string} onChange={(v) => updateField('destPostalCode', v)} placeholder="اختیاری" />
+                    </div>
+                  </>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-emerald-500/35 bg-emerald-500/5 p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold">مبدا و مقصد از نقشه سامانه</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          اولویت با مختصات واردشده در همین بخش است. اگر مختصات را وارد کنید، ربات همان‌ها را در نقشه سایت اعمال می‌کند و برای دفعات بعد ذخیره می‌شود.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="default"
+                        onClick={() => editProfile && handleCaptureMap(editProfile)}
+                        disabled={!editProfile || !!capturingMapId}
+                      >
+                        {capturingMapId === editProfile?.id ? <Loader2 className="size-4 ml-2 animate-spin" /> : <MapPin className="size-4 ml-2" />}
+                        ثبت از روی نقشه / بروزرسانی
+                      </Button>
+                    </div>
+                    {!editProfile && (
+                      <p className="text-xs text-amber-600">
+                        برای انتخاب نقشه، ابتدا پروفایل را ذخیره کنید؛ سپس در ویرایش همین مرحله دکمه «ثبت از روی نقشه / بروزرسانی» فعال می‌شود.
+                      </p>
+                    )}
+
+                    <label className="flex cursor-pointer items-center gap-2 rounded-lg border bg-background/60 p-3 text-xs">
+                      <input
+                        type="checkbox"
+                        className="size-4 accent-emerald-500"
+                        checked={useCoordinateInputs}
+                        onChange={(e) => setUseCoordinateInputs(e.target.checked)}
+                      />
+                      <span>
+                        ورود مستقیم مختصات latitude / longitude برای مبدا و مقصد
+                        <span className="block text-muted-foreground mt-0.5">پیش‌فرض فعال است و نسبت به انتخاب مرورگر سامانه اولویت دارد.</span>
                       </span>
-                    </span>
-                  </label>
-                </div>
+                    </label>
 
-                <p className="text-sm font-semibold text-muted-foreground">مبدا بارگیری (گام ۵ سایت)</p>
-                <div className="grid grid-cols-2 gap-4">
-                  {autoProvince ? (
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-muted-foreground">استان مبدا (خودکار)</Label>
-                      <div className="flex h-9 items-center rounded-md border border-dashed border-blue-500/40 bg-blue-500/5 px-3 text-sm">
-                        {provinceFromPlateUI(form.plateNumber as string) || <span className="text-muted-foreground">از پلاک تشخیص داده می‌شود</span>}
+                    {useCoordinateInputs && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 rounded-lg border bg-background/60 p-3">
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold text-muted-foreground">مختصات مبدا</p>
+                          <Field
+                            label="مختصات کامل مبدا"
+                            value={form.originCoordinate as string}
+                            onChange={(v) => updateField('originCoordinate', v)}
+                            placeholder="latitude, longitude  مثلا: 30.286924, 57.039170"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold text-muted-foreground">مختصات مقصد</p>
+                          <Field
+                            label="مختصات کامل مقصد"
+                            value={form.destCoordinate as string}
+                            onChange={(v) => updateField('destCoordinate', v)}
+                            placeholder="latitude, longitude  مثلا: 30.280931, 57.063900"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                      <div className="rounded-lg border bg-background/60 p-3">
+                        <p className="font-medium text-muted-foreground mb-1">مبدا ذخیره‌شده</p>
+                        <p>{String(form.originAddress || '').trim() || 'هنوز از نقشه ثبت نشده'}</p>
+                        <p className="mt-1 text-muted-foreground">{String(form.originProvince || '—')} / {String(form.originCity || '—')}</p>
+                      </div>
+                      <div className="rounded-lg border bg-background/60 p-3">
+                        <p className="font-medium text-muted-foreground mb-1">مقصد ذخیره‌شده</p>
+                        <p>{String(form.destAddress || '').trim() || 'هنوز از نقشه ثبت نشده'}</p>
+                        <p className="mt-1 text-muted-foreground">{String(form.destProvince || '—')} / {String(form.destCity || '—')}</p>
                       </div>
                     </div>
-                  ) : (
-                    <FieldSelect label="استان مبدا *" value={form.originProvince as string} onChange={(v) => updateField('originProvince', v)} options={PROVINCE_LIST} placeholder="انتخاب کنید" error={errOf('originProvince')} />
-                  )}
-                  <Field label="شهر مبدا *" value={form.originCity as string} onChange={(v) => updateField('originCity', v)} placeholder="شهر، محله یا روستا — مثلا سیرجان، ریشهر" error={errOf('originCity')} />
-                  <Field label="آدرس مبدا (اختیاری)" value={form.originAddress as string} onChange={(v) => updateField('originAddress', v)} placeholder="خیابان، کوچه، پلاک" error={errOf('originAddress')} />
-                  <Field label="کدپستی مبدا" value={form.originPostalCode as string} onChange={(v) => updateField('originPostalCode', v)} placeholder="اختیاری" />
-                </div>
-
-                <p className="text-sm font-semibold text-muted-foreground pt-2">مقصد تخلیه (گام ۶ سایت)</p>
-                <div className="grid grid-cols-2 gap-4">
-                  {autoProvince ? (
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-muted-foreground">استان مقصد (خودکار)</Label>
-                      <div className="flex h-9 items-center rounded-md border border-dashed border-blue-500/40 bg-blue-500/5 px-3 text-sm">
-                        {provinceFromPlateUI(form.plateNumber as string) || <span className="text-muted-foreground">از پلاک تشخیص داده می‌شود</span>}
-                      </div>
-                    </div>
-                  ) : (
-                    <FieldSelect label="استان مقصد *" value={form.destProvince as string} onChange={(v) => updateField('destProvince', v)} options={PROVINCE_LIST} placeholder="انتخاب کنید" error={errOf('destProvince')} />
-                  )}
-                  <Field label="شهر مقصد *" value={form.destCity as string} onChange={(v) => updateField('destCity', v)} placeholder="شهر، محله یا روستا — مثلا سیرجان، ریشهر" error={errOf('destCity')} />
-                  <Field label="آدرس مقصد (اختیاری)" value={form.destAddress as string} onChange={(v) => updateField('destAddress', v)} placeholder="خیابان، کوچه، پلاک" error={errOf('destAddress')} />
-                  <Field label="کدپستی مقصد" value={form.destPostalCode as string} onChange={(v) => updateField('destPostalCode', v)} placeholder="اختیاری" />
-                </div>
+                  </div>
+                )}
 
                 <p className="text-sm font-semibold text-muted-foreground pt-2">کرایه (گام ۸ سایت)</p>
                 <div className="grid grid-cols-2 gap-4">
@@ -1126,12 +1448,49 @@ function toLatinDigits(v: string): string {
     .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
 }
 
-/** «45 ع 923 17» → اجزا */
+/**
+ * پلاک را به اجزا تبدیل می‌کند.
+ * قالب‌های رایج را پشتیبانی می‌کند:
+ *   45 ع 923 17
+ *   45-ع-17-923
+ *   45 ع 923 ایران 17
+ *   ایران 17 45 ع 923
+ */
 function parsePlateParts(v: string): { two: string; letter: string; three: string; iran: string } {
-  const s = toLatinDigits(v).replace(/ايران|ایران/g, ' ').trim()
-  const m = s.match(/(\d{1,2})\s*[-\s]?\s*([\u0600-\u06FF]+)\s*[-\s]?\s*(\d{1,3})\s*[-\s]?\s*(\d{1,2})/)
-  if (m) return { two: m[1], letter: m[2].trim(), three: m[3], iran: m[4] }
-  return { two: '', letter: '', three: '', iran: '' }
+  const raw = toLatinDigits(v).trim()
+  const beforeIran = raw.match(/(?:^|\D)(\d{1,2})\s*(?:ایران|ايران)(?:\D|$)/i)?.[1] || ''
+  const afterIran = raw.match(/(?:ایران|ايران)\s*(\d{1,2})(?:\D|$)/i)?.[1] || ''
+  const explicitIran = beforeIran || afterIran
+
+  const s = raw.replace(/(?:ایران|ايران)/g, ' ').replace(/[-_|]/g, ' ').trim()
+  const letter = (s.match(/[\u0600-\u06FF]+/) || [''])[0].trim()
+  let nums = s.match(/\d+/g) || []
+
+  if (explicitIran) {
+    const idx = nums.findIndex((n) => n === explicitIran)
+    if (idx >= 0) nums = nums.filter((_, i) => i !== idx)
+  }
+
+  let two = ''
+  let three = ''
+  let iran = explicitIran
+
+  const threeIdx = nums.findIndex((n) => n.length === 3)
+  if (threeIdx >= 0) {
+    three = nums[threeIdx]
+    const others = nums.filter((_, i) => i !== threeIdx)
+    two = others.find((n) => n.length <= 2) || others[0] || ''
+    if (!iran) iran = others.find((n) => n !== two && n.length <= 2) || ''
+  } else {
+    two = nums.find((n) => n.length <= 2) || nums[0] || ''
+    if (!iran) iran = nums.find((n) => n !== two && n.length <= 2) || ''
+  }
+
+  // اگر ترتیب سایت «45 17 923» بود، بالا iran را درست می‌گیرد؛ اگر فقط دو عدد داشتیم،
+  // برای تشخیص استان عدد غیر از دو رقم اول را ایران می‌گیریم.
+  if (!iran && nums.length >= 2) iran = nums[1]
+
+  return { two, letter, three, iran }
 }
 
 function PlateField({ value, onChange, error }: { value: string; onChange: (v: string) => void; error?: string }) {
