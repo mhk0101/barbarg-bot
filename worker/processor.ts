@@ -424,14 +424,20 @@ export async function processWaybillJob(taskId: string): Promise<void> {
          ۲) وظایف در انتظار همین حساب لغو می‌شوند
          ۳) اعلان ساخته می‌شود تا کاربر فورا بفهمد
        نمونه‌ها: رمز اشتباه، حساب قفل/مسدود، محدودیت موقت صدور بارنامه شهری. */
-    if (kind === 'bad_credentials' || kind === 'account_locked' || kind === 'account_restricted') {
+    if (kind === 'bad_credentials' || kind === 'account_locked' || kind === 'account_restricted' || kind === 'otp_failed') {
       const isLocked = kind === 'account_locked'
       const isRestricted = kind === 'account_restricted'
-      const title = isRestricted
-        ? 'حساب باربگ برای صدور بارنامه شهری محدود شده است'
-        : (isLocked ? 'حساب باربگ مسدود است' : 'مشخصات حساب باربگ اشتباه است')
+      const isOtpFailed = kind === 'otp_failed'
+      const title = isOtpFailed
+        ? 'کد یکبارمصرف حساب باربگ ثبت نشد'
+        : (isRestricted
+            ? 'حساب باربگ برای صدور بارنامه شهری محدود شده است'
+            : (isLocked ? 'حساب باربگ مسدود است' : 'مشخصات حساب باربگ اشتباه است'))
 
       await log(taskId, 'error', errMsg)
+      if (isOtpFailed) {
+        await log(taskId, 'error', 'بعد از ۲ تلاش کامل، کد یکبارمصرف دریافت/ثبت نشد؛ عملیات‌های این اکانت متوقف می‌شود')
+      }
       await log(taskId, 'error', `حساب «${account.accountName}» (${account.username}) غیرفعال شد`)
 
       // ۱) حساب را غیرفعال کن

@@ -1,8 +1,87 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 
+
+async function reconcileRunningResults() {
+  try {
+    const stale = await prisma.automationResult.findMany({
+      where: { status: { in: ['running', 'pending'] } },
+      select: {
+        id: true,
+        status: true,
+        resultMessage: true,
+        taskId: true,
+        startedAt: true,
+        createdAt: true,
+        job: { select: { id: true, status: true, result: true, error: true, completedAt: true, startedAt: true } },
+      },
+      take: 200,
+    })
+
+    const now = new Date()
+    for (const r of stale) {
+      const job = r.job
+      if (!job) {
+        await prisma.automationResult.update({
+          where: { id: r.id },
+          data: {
+            status: 'failed',
+            resultType: 'error',
+            resultMessage: r.resultMessage || 'وظیفه مربوط به این نتیجه در صف/دیتابیس یافت نشد؛ وضعیت در حال اجرا اصلاح شد',
+            finishedAt: now,
+          },
+        }).catch(() => {})
+        continue
+      }
+
+      if (job.status === 'processing') continue
+
+      if (job.status === 'completed') {
+        await prisma.automationResult.update({
+          where: { id: r.id },
+          data: {
+            status: 'completed',
+            resultType: 'success',
+            resultMessage: r.resultMessage || job.result || 'عملیات تکمیل شد',
+            finishedAt: job.completedAt || now,
+          },
+        }).catch(() => {})
+      } else if (job.status === 'failed') {
+        await prisma.automationResult.update({
+          where: { id: r.id },
+          data: {
+            status: 'failed',
+            resultType: 'error',
+            resultMessage: r.resultMessage || job.error || 'وظیفه ناموفق شد',
+            errorCode: 'TASK_FAILED',
+            finishedAt: job.completedAt || now,
+          },
+        }).catch(() => {})
+      } else if (job.status === 'cancelled') {
+        await prisma.automationResult.update({
+          where: { id: r.id },
+          data: {
+            status: 'cancelled',
+            resultType: 'warning',
+            resultMessage: r.resultMessage || job.error || 'وظیفه لغو شد',
+            finishedAt: job.completedAt || now,
+          },
+        }).catch(() => {})
+      } else if (job.status === 'pending' && r.status !== 'pending') {
+        await prisma.automationResult.update({
+          where: { id: r.id },
+          data: { status: 'pending', resultType: 'info', resultMessage: r.resultMessage || 'در صف انتظار' },
+        }).catch(() => {})
+      }
+    }
+  } catch {
+    // اصلاح وضعیت نباید API نتایج را خراب کند
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
+    await reconcileRunningResults()
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
 

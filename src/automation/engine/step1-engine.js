@@ -1913,8 +1913,12 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
       otpHandled = true
       const okOtp = await waitAndSubmitFinalOtp(page, getOtpCode, 60_000, verbose)
       if (!okOtp) {
-        swalErr = 'کد پیامکی دریافت یا ثبت نشد'
-        break
+        await page.screenshot({ path: path.join(OUT, `${tag}-otp-failed.png`), fullPage: true }).catch(() => {})
+        return {
+          success: false,
+          kind: 'otp_failed',
+          error: 'کد یکبارمصرف پیامکی دریافت نشد یا در پنجره OTP ثبت نشد',
+        }
       }
     }
 
@@ -3264,7 +3268,7 @@ async function runWaybill(opts) {
 
   // این نوع خطاها یعنی «سایت/شبکه» — ارزش صبر کردن دارد
   const RETRY_LONG  = ['block', 'busy', 'waf', 'timeout']
-  const RETRY_SHORT = ['dead', 'login', 'driver_plate_not_found']
+  const RETRY_SHORT = ['dead', 'login', 'driver_plate_not_found', 'otp_failed']
 
   /* سقف تلاش برای هر نوع — عینا مطابق test-step1.js
        بلاک IP   : gotoR(max = 20)              → ۲۰ بار، هر بار ۳–۵ دقیقه
@@ -3278,6 +3282,7 @@ async function runWaybill(opts) {
     dead:    maxRestarts,
     login:   maxRestarts,
     driver_plate_not_found: 10,
+    otp_failed: 2,
   }
 
   let last = null
@@ -3324,6 +3329,13 @@ async function runWaybill(opts) {
       return last
     }
 
+    // کد پیامکی فقط ۲ بار کل عملیات را از صفر تکرار می‌کند؛ بعد به ورکر برمی‌گردد تا اکانت متوقف شود.
+    if (kind === 'otp_failed' && attempt >= (LIMITS.otp_failed || 2)) {
+      console.log(`   🛑 ${last.error}`)
+      console.log('      بعد از ۲ تلاش، کد یکبارمصرف ثبت نشد — عملیات‌های این اکانت متوقف می‌شود')
+      return last
+    }
+
     // خطای دائمی ⇒ تکرار بی‌فایده است
     if (isPermanentError(last.error || '')) {
       console.log(`   🛑 خطای دائمی — تکرار نمی‌شود: ${last.error}`)
@@ -3355,7 +3367,7 @@ async function runWaybill(opts) {
     }
 
     if (RETRY_SHORT.includes(kind)) {
-      const waitShort = kind === 'driver_plate_not_found' ? 0 : 15000
+      const waitShort = (kind === 'driver_plate_not_found' || kind === 'otp_failed') ? 0 : 15000
       console.log(`\n   ↻ ${label} (تلاش ${attempt}/${limit}) — شروع کامل از صفر${waitShort ? ' بعد از ۱۵ ثانیه' : ' بلافاصله'}`)
       if (waitShort) await sleepWithLog(waitShort)
       continue

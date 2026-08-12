@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from 'sonner'
 import {
-  Search, RefreshCw, ChevronLeft, ChevronRight, Eye, RotateCcw, Image, FileText,
+  Search, RefreshCw, ChevronLeft, ChevronRight, Eye, RotateCcw, FileText,
   ExternalLink, Clock, CheckCircle, XCircle, AlertTriangle, Loader2, Download,
 } from 'lucide-react'
 
@@ -283,13 +283,12 @@ export default function AutomationResultsPage() {
 
       <Card>
         <CardContent>
-          {/* ۱۳ ستون در عرض صفحه جا نمی‌شود. با min-width و اسکرول افقی
-              هر ستون فضای خودش را دارد و متن‌ها روی هم نمی‌افتند. */}
+          {/* ستون اسکرین‌شات حذف شد؛ جدول همچنان اسکرول افقی دارد تا متن‌ها روی هم نیفتند. */}
           <p className="mb-2 text-[11px] text-muted-foreground lg:hidden">
             برای دیدن همه‌ی ستون‌ها، جدول را به چپ و راست بکشید
           </p>
           <div className="-mx-2 overflow-x-auto px-2">
-            <table className="w-full min-w-[1900px] table-auto border-separate border-spacing-0 text-sm">
+            <table className="w-full min-w-[1780px] table-auto border-separate border-spacing-0 text-sm">
               <thead>
                 <tr className="text-muted-foreground">
                   <th style={{ width: 56 }}   className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">ردیف</th>
@@ -303,15 +302,14 @@ export default function AutomationResultsPage() {
                   <th style={{ width: 120 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">کد پیگیری</th>
                   <th style={{ width: 110 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">وضعیت</th>
                   <th style={{ width: 240 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">پیام</th>
-                  <th style={{ width: 90 }}   className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-right font-medium">اسکرین‌شات</th>
                   <th style={{ width: 110 }}  className="sticky top-0 z-10 whitespace-nowrap border-b bg-card px-3 py-3 text-left font-medium">عملیات</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={13} className="px-3 py-8 text-center text-muted-foreground">در حال بارگذاری...</td></tr>
+                  <tr><td colSpan={12} className="px-3 py-8 text-center text-muted-foreground">در حال بارگذاری...</td></tr>
                 ) : results.length === 0 ? (
-                  <tr><td colSpan={13} className="px-3 py-8 text-center text-muted-foreground">داده‌ای یافت نشد</td></tr>
+                  <tr><td colSpan={12} className="px-3 py-8 text-center text-muted-foreground">داده‌ای یافت نشد</td></tr>
                 ) : results.map((r, idx) => {
                   const sc = statusConfig[r.status] || statusConfig.pending
                   /* شماره‌ی پیوسته در کل صفحه‌ها، نه فقط صفحه‌ی جاری */
@@ -364,11 +362,6 @@ export default function AutomationResultsPage() {
                         <span className="line-clamp-2 break-words" title={r.resultMessage || ''}>
                           {r.resultMessage || '-'}
                         </span>
-                      </td>
-                      <td className="px-3 py-3">
-                        {r.screenshotPath ? (
-                          <Image className="size-4 text-green-500" />
-                        ) : '-'}
                       </td>
                       <td className="px-3 py-3">
                         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
