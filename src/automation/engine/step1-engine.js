@@ -1781,9 +1781,80 @@ async function fillFareStep(page, fare, OUT, tag, verbose = true) {
   return active
 }
 
+
+/* ── OTP نهایی سایت، بعد از کلیک ثبت نهایی ── */
+async function isOtpModalVisible(page) {
+  return page.evaluate(() => {
+    const m = document.getElementById('GetOptCodeModal')
+    if (!m) return false
+    const st = window.getComputedStyle(m)
+    return st.display !== 'none' && st.visibility !== 'hidden' && m.classList.contains('show')
+  }).catch(() => false)
+}
+
+async function fillFinalOtpModal(page, code, verbose = true) {
+  const log = (m) => { if (verbose) console.log(m) }
+  const otp = String(code || '').replace(/\D/g, '').slice(0, 6)
+  if (otp.length !== 6) return false
+
+  const ok = await page.evaluate((otp) => {
+    const modal = document.getElementById('GetOptCodeModal')
+    if (!modal) return false
+    const boxes = Array.from(modal.querySelectorAll('input.otp-box'))
+    if (boxes.length < 6) return false
+    for (let i = 0; i < 6; i++) {
+      const el = boxes[i]
+      el.value = otp[i]
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+      el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: otp[i] }))
+    }
+    const hidden = document.getElementById('otp') || modal.querySelector('input[name="otp"]')
+    if (hidden) {
+      hidden.value = otp
+      hidden.dispatchEvent(new Event('input', { bubbles: true }))
+      hidden.dispatchEvent(new Event('change', { bubbles: true }))
+    }
+    return true
+  }, otp).catch(() => false)
+
+  if (!ok) return false
+  log(`   ✔ کد پیامکی ${otp} در پنجره OTP وارد شد`)
+  await page.waitForTimeout(300)
+  await page.click('#submitOtp').catch(async () => {
+    await page.evaluate(() => document.getElementById('submitOtp')?.click()).catch(() => {})
+  })
+  log('   ➜ دکمه ثبت OTP کلیک شد')
+  await page.waitForTimeout(1500)
+  return true
+}
+
+async function waitAndSubmitFinalOtp(page, getOtpCode, timeoutMs = 60_000, verbose = true) {
+  const log = (m) => { if (verbose) console.log(m) }
+  if (typeof getOtpCode !== 'function') {
+    log('   ✖ پنجره OTP باز شد ولی منبع دریافت کد پیامکی تعریف نشده است')
+    return false
+  }
+
+  const started = Date.now()
+  log('   🔐 پنجره کد پیامکی نمایش داده شد؛ تا ۱ دقیقه منتظر پیامک همان حساب می‌مانم...')
+  let lastCode = ''
+  while (Date.now() - started < timeoutMs) {
+    let code = ''
+    try { code = String(await getOtpCode() || '').replace(/\D/g, '').slice(0, 6) } catch (e) { code = '' }
+    if (code && code !== lastCode) {
+      lastCode = code
+      if (code.length === 6) return fillFinalOtpModal(page, code, verbose)
+    }
+    await page.waitForTimeout(3000)
+  }
+  log('   ✖ در مهلت ۱ دقیقه‌ای، کد پیامکی مربوط به این حساب دریافت نشد')
+  return false
+}
+
 /* ═══════════ گام ۹: تایید + کپچا + ثبت نهایی ═══════════ */
 async function finalConfirmStep(page, OUT, tag, opts = {}) {
-  const { verbose = true, dryRun = true } = opts
+  const { verbose = true, dryRun = true, getOtpCode = null } = opts
   const log = (m) => { if (verbose) console.log(m) }
 
   const sum = await page.evaluate(() => {
@@ -1836,7 +1907,17 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
   let code = ''
   let swalErr = ''
   let finalSuccess = null
-  for (let i = 0; i < 60; i++) {
+  let otpHandled = false
+  for (let i = 0; i < 90; i++) {
+    if (!otpHandled && await isOtpModalVisible(page)) {
+      otpHandled = true
+      const okOtp = await waitAndSubmitFinalOtp(page, getOtpCode, 60_000, verbose)
+      if (!okOtp) {
+        swalErr = 'کد پیامکی دریافت یا ثبت نشد'
+        break
+      }
+    }
+
     const st = await page.evaluate(() => {
       const code = (document.getElementById('TrackingCodeNumber') || {}).value || ''
       const box = document.getElementById('trackingcode')
@@ -1868,16 +1949,24 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
   }
 
   if (swalErr) {
-    const permanent = /مختصات انتخابی نامعتبر|کد ملی|کدملی|شناسه ملی|اعتبار کافی|موجودی|تکراری|مجوز|دسترسی ندارید/.test(swalErr)
+    const cleanErr = cleanSiteErrorMessage(swalErr)
+    const accountRestricted = isAccountRestrictedError(swalErr) || isAccountRestrictedError(cleanErr)
+    const permanent = accountRestricted || /مختصات انتخابی نامعتبر|کد ملی|کدملی|شناسه ملی|اعتبار کافی|موجودی|تکراری|مجوز|دسترسی ندارید/.test(cleanErr)
     log(`\n   ✖ خطای سایت هنگام ثبت نهایی:`)
-    log(`      ${swalErr}`)
-    if (permanent) {
+    log(`      ${cleanErr}`)
+    if (accountRestricted) {
+      log('   🛑 حساب برای صدور بارنامه شهری محدود/مسدود شده است — همه عملیات‌های این اکانت متوقف می‌شود')
+    } else if (permanent) {
       log('   🛑 این خطا دائمی است — تکرار بی‌فایده است، داده را اصلاح کن')
     } else {
-      log('   ↻ خطای موقتی — ربات اصلی ۱۰ تا ۱۵ دقیقه صبر و تا ۱۰۰ بار تکرار می‌کند')
+      log('   ↻ خطای موقتی — ربات اصلی طبق سیاست تلاش مجدد دوباره شروع می‌کند')
     }
     await page.screenshot({ path: path.join(OUT, `${tag}-swal.png`), fullPage: true }).catch(() => {})
-    return false
+    return {
+      success: false,
+      kind: accountRestricted ? 'account_restricted' : (permanent ? 'permanent' : 'error'),
+      error: cleanErr,
+    }
   }
 
   if (code) {
@@ -2134,18 +2223,49 @@ async function readSwalError(page) {
     if (!pop || pop.offsetParent === null) return ''
     const body = (document.getElementById('swal2-html-container')?.textContent || '').trim()
     const title = (document.getElementById('swal2-title')?.textContent || '').trim()
-    return (body || title).replace(/\s+/g, ' ').slice(0, 160)
+    return (body || title).replace(/\s+/g, ' ').slice(0, 1000)
   }).catch(() => '')
 }
 
-async function waitForSwalError(page, ms = 3000) {
-  const t0 = Date.now()
-  while (Date.now() - t0 < ms) {
-    const e = await readSwalError(page)
-    if (e) return e
-    await page.waitForTimeout(300).catch(() => {})
+async function readServerConnectionTableError(page) {
+  return page.evaluate(() => {
+    const cells = Array.from(document.querySelectorAll('td[colspan]'))
+    for (const td of cells) {
+      const t = (td.textContent || '').replace(/\s+/g, ' ').trim()
+      if (/خطا در برقراری ارتباط با سرور|Service Unavailable/i.test(t)) return t
+    }
+    return ''
+  }).catch(() => '')
+}
+
+async function readStep3ServerTempError(page) {
+  const sw = await readSwalError(page)
+  const td = await readServerConnectionTableError(page)
+  const msg = [sw, td].filter(Boolean).join(' | ')
+  return isServerTempError(msg) ? (msg || 'Service Unavailable') : ''
+}
+
+async function fillDriverVehicleStepWithRetries(page, driver, OUT, tag, verbose = true) {
+  const log = (m) => { if (verbose) console.log(m) }
+  let lastError = ''
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (attempt > 1) {
+      log(`   ↻ تلاش مجدد گام ۳ داخل همین صفحه (${attempt}/3) — بدون رفرش`)
+      await page.evaluate(() => {
+        const b = document.querySelector('.swal2-popup .swal2-close, .swal2-popup .swal2-confirm')
+        if (b) b.click()
+      }).catch(() => {})
+      await page.waitForTimeout(2500)
+    }
+    const serverErrBefore = await readStep3ServerTempError(page)
+    if (serverErrBefore) throw new Error(`SERVER_TEMP_STEP3: ${serverErrBefore}`)
+    const ok = await fillDriverVehicleStep(page, driver, OUT, tag, verbose)
+    if (ok) return true
+    const serverErrAfter = await readStep3ServerTempError(page)
+    if (serverErrAfter) throw new Error(`SERVER_TEMP_STEP3: ${serverErrAfter}`)
+    lastError = `پلاک یا راننده پیدا نشد: ${driver.plateText || ''} / ${driver.name || ''} ${driver.nationalId || ''}`
   }
-  return ''
+  throw new Error(`DRIVER_PLATE_NOT_FOUND: ${lastError}`)
 }
 
 
@@ -2190,12 +2310,40 @@ const NET_BLOCK_RE = /INTERNET_DISCONNECTED|اتصال اینترنت|اینتر
 /** صفحه/مرورگر مرده است */
 const PAGE_DEAD_RE = /Target page, context or browser has been closed|Target closed|browser has been closed|Session closed|Protocol error/i
 
+/** خطاهای موقتی سرور/ارتباط داخلی سایت */
+const SERVER_TEMP_RE = /Service Unavailable|service is unavailable|temporarily unavailable|خطا در برقراری ارتباط با سرور|قادر به پاسخگویی|سرور در حال حاضر|چند دقیقه دیگر مجدد|HTTP status code.*400|Status:\s*400/i
+
+/** خطای محدودیت/مسدودی موقت حساب در صدور بارنامه شهری */
+const ACCOUNT_RESTRICTED_RE = /صدور غیر مجاز بارنامه شهری|محدودیت در صدور بارنامه شهری|لیست سیاه سامانه|لیست سیاه|resultCode[\"']?\s*[:=]\s*9990|کد.*9990/i
+
 /** خطای دائمی — تکرار بی‌فایده است */
-const PERMANENT_RE = /مختصات انتخابی نامعتبر|کد ملی|کدملی|شناسه ملی|اعتبار کافی|موجودی|تکراری|مجوز|دسترسی ندارید|رمز|کلمه عبور|کاربری یافت نشد|نام کاربری|قفل|مسدود|غیرفعال/
+const PERMANENT_RE = /مختصات انتخابی نامعتبر|کد ملی|کدملی|شناسه ملی|اعتبار کافی|موجودی|تکراری|مجوز|دسترسی ندارید|رمز|کلمه عبور|کاربری یافت نشد|نام کاربری|قفل|مسدود|غیرفعال|صدور غیر مجاز بارنامه شهری|محدودیت در صدور بارنامه شهری|لیست سیاه سامانه|لیست سیاه/
 
 const isNetBlockError  = (e) => NET_BLOCK_RE.test(String((e && e.message) || e))
 const isPageDeadError  = (e) => PAGE_DEAD_RE.test(String((e && e.message) || e))
+const isAccountRestrictedError = (e) => ACCOUNT_RESTRICTED_RE.test(String((e && e.message) || e))
+const isServerTempError = (e) => SERVER_TEMP_RE.test(String((e && e.message) || e))
 const isPermanentError = (e) => PERMANENT_RE.test(String((e && e.message) || e))
+
+function cleanSiteErrorMessage(raw) {
+  let t = String(raw || '').trim()
+  // خطای سایت گاهی JSON را داخل متن انگلیسی Response می‌گذارد.
+  const jsonMatch = t.match(/\{[\s\S]*\}/)
+  if (jsonMatch) {
+    try {
+      const obj = JSON.parse(jsonMatch[0])
+      if (obj && obj.resultMessage) t = String(obj.resultMessage)
+    } catch (e) {}
+  }
+  t = t
+    .replace(/One or more errors occurred\.\s*/i, '')
+    .replace(/The HTTP status code[\s\S]*?Response:\s*/i, '')
+    .replace(/Status:\s*\d+/i, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return t || String(raw || '').split('\n')[0].slice(0, 500)
+}
 
 /**
  * چالش امنیتی WAF — صفحه‌ی «Security check» با کپچای تصویری.
@@ -2894,7 +3042,7 @@ async function runWaybillOnce(opts) {
     console.log('\n═══ گام ۳: مشخصات راننده و خودرو ═══')
     console.log(`   راننده: ${d.driver.name} | پلاک: ${d.driver.plateText}`)
     lastStep = 'راننده و خودرو'
-    ok3 = await step(3, await fillDriverVehicleStep(page, d.driver, OUT, 'step3'), 'راننده و خودرو')
+    ok3 = await step(3, await fillDriverVehicleStepWithRetries(page, d.driver, OUT, 'step3'), 'راننده و خودرو')
   }
   if (ok3) {
     console.log('\n═══ گام ۴: مشخصات کالا ═══')
@@ -2968,9 +3116,11 @@ async function runWaybillOnce(opts) {
   if (!opts.captureMapLocations && ok8) {
     console.log('\n═══ گام ۹: تایید مشخصات و ثبت نهایی ═══')
     lastStep = 'ثبت نهایی'
-    const res = await finalConfirmStep(page, OUT, 'step9', { dryRun: !submit })
+    const res = await finalConfirmStep(page, OUT, 'step9', { dryRun: !submit, getOtpCode: opts.getOtpCode })
     ok9 = !!res && (typeof res === 'object' ? res.success !== false : true)
-    if (typeof res === 'string') {
+    if (res && typeof res === 'object' && res.success === false) {
+      midFail = { kind: res.kind || 'error', error: res.error || 'ثبت نهایی ناموفق بود' }
+    } else if (typeof res === 'string') {
       trackingCode = res
       console.log(`\n🎉🎉 کد رهگیری: ${res}`)
     } else if (res && typeof res === 'object' && res.trackingCode) {
@@ -2987,7 +3137,10 @@ async function runWaybillOnce(opts) {
        گزارش می‌شد و دلیل واقعی گم می‌شد. */
     const msg = String((e && e.message) || e).split('\n')[0].slice(0, 160)
     if (isPageDeadError(e))      midFail = { kind: 'dead',  error: `مرورگر در گام «${lastStep}» بسته شد` }
+    else if (/DRIVER_PLATE_NOT_FOUND/i.test(msg)) midFail = { kind: 'driver_plate_not_found', error: msg.replace(/^DRIVER_PLATE_NOT_FOUND:\s*/i, '') }
+    else if (/SERVER_TEMP_STEP3/i.test(msg) || isServerTempError(e)) midFail = { kind: 'busy', error: cleanSiteErrorMessage(msg.replace(/^SERVER_TEMP_STEP3:\s*/i, '')) }
     else if (isNetBlockError(e)) midFail = { kind: 'block', error: `اتصال در گام «${lastStep}» قطع شد (احتمال بلاک IP): ${msg}` }
+    else if (isAccountRestrictedError(e)) midFail = { kind: 'account_restricted', error: cleanSiteErrorMessage(msg) }
     else                         midFail = { kind: 'error', error: `خطا در گام «${lastStep}»: ${msg}` }
     console.log(`   ✖ ${midFail.error}`)
   }
@@ -3111,7 +3264,7 @@ async function runWaybill(opts) {
 
   // این نوع خطاها یعنی «سایت/شبکه» — ارزش صبر کردن دارد
   const RETRY_LONG  = ['block', 'busy', 'waf', 'timeout']
-  const RETRY_SHORT = ['dead', 'login']
+  const RETRY_SHORT = ['dead', 'login', 'driver_plate_not_found']
 
   /* سقف تلاش برای هر نوع — عینا مطابق test-step1.js
        بلاک IP   : gotoR(max = 20)              → ۲۰ بار، هر بار ۳–۵ دقیقه
@@ -3120,15 +3273,16 @@ async function runWaybill(opts) {
   const LIMITS = {
     block:   maxRestarts,   // پیش‌فرض ۲۰
     waf:     maxRestarts,
-    busy:    5,
+    busy:    Number.POSITIVE_INFINITY,
     timeout: 5,
     dead:    maxRestarts,
     login:   maxRestarts,
+    driver_plate_not_found: 10,
   }
 
   let last = null
 
-  for (let attempt = 1; attempt <= maxRestarts; attempt++) {
+  for (let attempt = 1; attempt <= maxRestarts || (last && last.kind === 'busy'); attempt++) {
     if (shouldStop && await shouldStop()) {
       console.log('   ⏹ درخواست توقف دریافت شد')
       return last || { success: false, error: 'متوقف شد', kind: 'stopped', steps: [] }
@@ -3164,6 +3318,11 @@ async function runWaybill(opts) {
       console.log('      تلاش مجدد انجام نمی‌شود — اول مشخصات حساب را درست کنید')
       return last
     }
+    if (kind === 'account_restricted') {
+      console.log(`   🛑 ${last.error}`)
+      console.log('      حساب در صدور بارنامه شهری محدود شده — همه عملیات‌های این اکانت متوقف می‌شود')
+      return last
+    }
 
     // خطای دائمی ⇒ تکرار بی‌فایده است
     if (isPermanentError(last.error || '')) {
@@ -3196,8 +3355,9 @@ async function runWaybill(opts) {
     }
 
     if (RETRY_SHORT.includes(kind)) {
-      console.log(`\n   ↻ ${label} (تلاش ${attempt}/${limit}) — مرورگر تازه بعد از ۱۵ ثانیه`)
-      await sleepWithLog(15000)
+      const waitShort = kind === 'driver_plate_not_found' ? 0 : 15000
+      console.log(`\n   ↻ ${label} (تلاش ${attempt}/${limit}) — شروع کامل از صفر${waitShort ? ' بعد از ۱۵ ثانیه' : ' بلافاصله'}`)
+      if (waitShort) await sleepWithLog(waitShort)
       continue
     }
 
@@ -3207,7 +3367,8 @@ async function runWaybill(opts) {
          تایم‌اوت  : rand(2*60*1000, 5*60*1000)      →  ۲ تا ۵ دقیقه  */
     const waitMs =
         kind === 'block'   ? 180000 + Math.random() * 120000
-      : kind === 'busy'    ? rand(2 * 60 * 1000, 5 * 60 * 1000)
+      // خطاهای Service Unavailable / خطا در برقراری ارتباط با سرور: ۱ دقیقه وقفه، سپس شروع کامل از صفر
+      : kind === 'busy'    ? 60 * 1000
       : kind === 'timeout' ? rand(2 * 60 * 1000, 5 * 60 * 1000)
       :                      rand(2 * 60 * 1000, 5 * 60 * 1000)
 
@@ -4099,11 +4260,11 @@ module.exports = {
   parseProfileMapLocations, runProfileMapCapture,
   // برای استفاده‌ی مستقیم در ابزارهای تست
   gotoR, classifyTemplate, solveMath, waitLoginResult,
-  fillPersonStep, fillDriverVehicleStep, fillCargoStep, fillLocationStep,
+  fillPersonStep, fillDriverVehicleStep, fillDriverVehicleStepWithRetries, fillCargoStep, fillLocationStep,
   captureLocationFromMapStep, applySavedMapLocationStep,
   passReviewStep, fillFareStep, finalConfirmStep,
   pageHealth, isWafChallenge, waitUntilSiteBack,
-  isNetBlockError, isPageDeadError, isPermanentError,
+  isNetBlockError, isPageDeadError, isAccountRestrictedError, isServerTempError, isPermanentError,
   classifyCredentialError,
   isServerBusy, readBusyMessage, readSwalError, waitForSwalError, sleepWithLog,
   STEP_SENDER, STEP_RECEIVER, STEP_ORIGIN, STEP_DEST,

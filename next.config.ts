@@ -8,6 +8,9 @@ const nextConfig: NextConfig = {
      می‌خوانند. اگر باندل شوند، آن فایل‌ها کپی نمی‌شوند و هنگام
      اجرا خطای ENOENT: Helvetica.afm می‌دهند. */
   serverExternalPackages: ['pdfkit', 'exceljs'],
+  
+  // 👇 این خط را اضافه کنید
+  allowedDevOrigins: ['aim-upfront-statue.ngrok-free.dev'],
 };
 
 export default nextConfig;

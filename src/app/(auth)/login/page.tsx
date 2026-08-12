@@ -64,6 +64,7 @@ export default function LoginPage() {
               <div className="relative">
                 <Mail className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@barbarg.com"
+                  autoComplete="email" suppressHydrationWarning
                   className="h-10 w-full rounded-xl border border-input bg-background pr-10 pl-4 text-sm placeholder:text-muted-foreground transition-shadow focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30" required />
               </div>
             </div>
@@ -73,6 +74,7 @@ export default function LoginPage() {
               <div className="relative">
                 <Lock className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <input id="password" type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••"
+                  autoComplete="current-password" suppressHydrationWarning
                   className="h-10 w-full rounded-xl border border-input bg-background pr-10 pl-10 text-sm placeholder:text-muted-foreground transition-shadow focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30" required />
                 <button type="button" className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setShowPassword(!showPassword)}>
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}

@@ -10,6 +10,7 @@
 import { PrismaClient } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 import crypto from 'crypto'
+import { extractSmsCode } from '../src/lib/sms-code'
 
 /**
  * موتور مشترک با test-step1.js — به‌صورت پویا بارگذاری می‌شود تا هم در
@@ -46,7 +47,7 @@ const DO_SUBMIT = process.env.BARBARG_SUBMIT !== 'false'   // پیش‌فرض: �
 const HEADLESS = process.env.BARBARG_HEADLESS === 'true'
 
 /** خطاهایی که تکرارشان بی‌فایده است */
-const PERMANENT = /مختصات انتخابی نامعتبر|کد ملی|کدملی|شناسه ملی|اعتبار کافی|موجودی|تکراری|مجوز|دسترسی ندارید|رمز|کلمه عبور|کاربری یافت نشد|قفل|مسدود|غیرفعال/
+const PERMANENT = /مختصات انتخابی نامعتبر|کد ملی|کدملی|شناسه ملی|اعتبار کافی|موجودی|تکراری|مجوز|دسترسی ندارید|رمز|کلمه عبور|کاربری یافت نشد|قفل|مسدود|غیرفعال|صدور غیر مجاز بارنامه شهری|محدودیت در صدور بارنامه شهری|لیست سیاه سامانه|لیست سیاه/
 
 /** سقف شروع مجدد داخل موتور (بلاک IP / سرور مشغول / WAF) */
 const MAX_RESTARTS = Number(process.env.BARBARG_MAX_RESTARTS || 20)
@@ -130,6 +131,37 @@ async function notify(title: string, message: string, type: 'info' | 'success' |
   await prisma.notification.create({
     data: { title, message: message.slice(0, 300), type },
   }).catch(() => {})
+}
+
+function createOtpCodeProvider(accountId: string, listenAfter: Date, taskId: string) {
+  let cachedCode = ''
+  let cachedSmsId = ''
+  return async () => {
+    if (cachedCode) return cachedCode
+    const smsList = await prisma.smsMessage.findMany({
+      where: {
+        accountId,
+        status: 'pending',
+        createdAt: { gte: listenAfter },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    }).catch(() => [])
+
+    for (const sms of smsList) {
+      const code = extractSmsCode(`${sms.rawText || ''} ${sms.resultMessage || ''}`)
+      if (!code) continue
+      cachedCode = code
+      cachedSmsId = sms.id
+      await prisma.smsMessage.update({
+        where: { id: sms.id },
+        data: { status: 'used', usedAt: new Date(), resultMessage: `کد ورود برای ثبت نهایی استفاده شد: ${code}` },
+      }).catch(() => {})
+      await log(taskId, 'success', `کد پیامکی مربوط به حساب دریافت شد و برای OTP نهایی استفاده می‌شود: ${code}`)
+      return cachedCode
+    }
+    return ''
+  }
 }
 
 export async function processWaybillJob(taskId: string): Promise<void> {
@@ -234,12 +266,16 @@ export async function processWaybillJob(taskId: string): Promise<void> {
     await log(taskId, 'info', DO_SUBMIT ? 'حالت: ثبت واقعی' : 'حالت: آزمایشی (dry-run) — دکمه ثبت نهایی زده نمی‌شود')
 
     // ─── ۳) اجرای موتور (همان test-step1.js) ───
+    const otpListenAfter = new Date(Date.now() - 30 * 1000)
+    const getOtpCode = createOtpCodeProvider(account.id, otpListenAfter, taskId)
+
     const result = await engine.runWaybill({
       credentials: { username: account.username, password: decryptPassword(account.passwordEncrypted) },
       data,
       submit: DO_SUBMIT,
       headless: HEADLESS,
       maxRestarts: MAX_RESTARTS,
+      getOtpCode,
       onLog: (line: string) => {
         const clean = String(line).replace(/^\s*\n/, '').trim()
         if (!clean) return
@@ -382,16 +418,18 @@ export async function processWaybillJob(taskId: string): Promise<void> {
        dead / login → مشکل محلی است، تکرار منطقی است */
     const engineExhausted = ['block', 'waf'].includes(kind)
 
-    /* ─── مشخصات حساب باربگ اشتباه است یا حساب مسدود شده ───
-       این خطا با تکرار حل نمی‌شود. علاوه بر متوقف کردن این وظیفه:
+    /* ─── خطاهای قطعی مربوط به خود حساب باربگ ───
+       این خطاها با تکرار حل نمی‌شوند. علاوه بر متوقف کردن این وظیفه:
          ۱) حساب غیرفعال می‌شود تا بقیه‌ی وظایف هم بی‌خود تلاش نکنند
          ۲) وظایف در انتظار همین حساب لغو می‌شوند
          ۳) اعلان ساخته می‌شود تا کاربر فورا بفهمد
-       وگرنه ۱۰ بارنامه‌ی بعدی هم یکی‌یکی همان خطا را می‌گیرند و
-       تلاش‌های پیاپی ممکن است حساب را در سامانه قفل کند. */
-    if (kind === 'bad_credentials' || kind === 'account_locked') {
+       نمونه‌ها: رمز اشتباه، حساب قفل/مسدود، محدودیت موقت صدور بارنامه شهری. */
+    if (kind === 'bad_credentials' || kind === 'account_locked' || kind === 'account_restricted') {
       const isLocked = kind === 'account_locked'
-      const title = isLocked ? 'حساب باربگ مسدود است' : 'مشخصات حساب باربگ اشتباه است'
+      const isRestricted = kind === 'account_restricted'
+      const title = isRestricted
+        ? 'حساب باربگ برای صدور بارنامه شهری محدود شده است'
+        : (isLocked ? 'حساب باربگ مسدود است' : 'مشخصات حساب باربگ اشتباه است')
 
       await log(taskId, 'error', errMsg)
       await log(taskId, 'error', `حساب «${account.accountName}» (${account.username}) غیرفعال شد`)
@@ -446,7 +484,48 @@ export async function processWaybillJob(taskId: string): Promise<void> {
       return
     }
 
-    if (PERMANENT.test(errMsg) || kind === 'permanent') {
+    if (kind === 'driver_plate_not_found') {
+      const title = 'راننده یا پلاک در سامانه پیدا نشد'
+      await log(taskId, 'error', 'بعد از ۳ تلاش داخل گام ۳ و ۱۰ شروع مجدد کامل، راننده یا پلاک پیدا نشد')
+      await log(taskId, 'error', errMsg)
+
+      let cancelled = 0
+      try {
+        const victims = await prisma.job.findMany({
+          where: { status: 'pending', profileId: profile.id },
+          select: { id: true },
+        })
+        if (victims.length) {
+          const ids = victims.map((v) => v.id)
+          await prisma.job.updateMany({
+            where: { id: { in: ids } },
+            data: { status: 'cancelled', error: title, completedAt: new Date() },
+          })
+          cancelled = ids.length
+          const { automationQueue } = await import('./queue')
+          const queued = await automationQueue.getJobs(['waiting', 'delayed', 'paused'])
+          for (const qj of queued) {
+            if (!ids.includes(qj?.data?.taskId)) continue
+            try { await qj.remove() } catch { /* ignore */ }
+          }
+        }
+      } catch { /* ignore */ }
+
+      await notify(title, `پروفایل «${profile.name}» | پلاک ${profile.plateNumber}: ${errMsg}` + (cancelled ? ` — ${cancelled} وظیفه در انتظار لغو شد.` : ''), 'error')
+      await prisma.job.update({ where: { id: taskId }, data: { status: 'failed', error: title + ': ' + errMsg, completedAt: new Date() } })
+      await prisma.automationResult.update({
+        where: { id: automationResult.id },
+        data: {
+          status: 'failed', resultMessage: title + ': ' + errMsg, resultType: 'error',
+          errorCode: 'DRIVER_PLATE_NOT_FOUND', finishedAt: new Date(), duration: Date.now() - startedAt,
+        },
+      }).catch(() => {})
+      await prisma.registrationProfile.update({
+        where: { id: profile.id },
+        data: { lastError: title + ': ' + errMsg, failedRuns: { increment: 1 } },
+      }).catch(() => {})
+      await createErrorLog(taskId, title + ': ' + errMsg)
+    } else if (PERMANENT.test(errMsg) || kind === 'permanent') {
       await log(taskId, 'error', 'خطای دائمی — تلاش مجدد انجام نمی‌شود، داده را اصلاح کنید')
       await notify('خطای دائمی — نیاز به بررسی', `پلاک ${profile.plateNumber}: ${errMsg}`, 'error')
       await prisma.job.update({ where: { id: taskId }, data: { status: 'failed', error: errMsg, completedAt: new Date() } })

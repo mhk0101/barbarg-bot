@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 import { smsLinkFlow } from '@/automation/auth/SmsLinkFlow'
 
-export async function POST(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
+
   try {
     const { id } = await params
     const sms = await prisma.smsMessage.findUnique({ where: { id } })

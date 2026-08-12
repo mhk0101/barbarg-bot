@@ -28,6 +28,89 @@ interface SmsMsg {
   account: { id: string; accountName: string; username: string } | null
 }
 
+function looksLikeUnreplacedSmsPlaceholder(msg: SmsMsg) {
+  const t = `${msg.fromNumber || ''} ${msg.rawText || ''}`
+  return /\{\s*(sender|from|number|message|body|text|sms|content|msg|key|time)\s*\}|%\s*(sender|from|number|message|body|text|sms|content|msg|key|time)\s*%|\[\s*(sender|from|number|message|body|text|sms|content|msg|key|time)\s*\]/i.test(t)
+}
+
+function toLatinDigits(v: string) {
+  return String(v || '')
+    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+}
+
+function normalizeSmsText(text: string) {
+  return toLatinDigits(text || '')
+    .replace(/[\u200c\u200f\u200e]/g, ' ')
+    .replace(/[：﹕]/g, ':')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function cleanCandidateCode(v: string): string | null {
+  const digits = toLatinDigits(v || '').replace(/\D/g, '')
+  if (digits.length < 4) return null
+  // اگر کد به تاریخ/متن بعدی چسبیده باشد، معمولاً کد واقعی همان ۶ رقم اول است.
+  if (digits.length > 8) return digits.slice(0, 6)
+  return digits
+}
+
+function extractSmsCode(text: string): string | null {
+  const t = normalizeSmsText(text)
+  if (!t) return null
+
+  const keyword = String.raw`(?:کد\s*(?:ورود|تایید|تأیید|احراز(?:\s*هویت)?|فعال\s*سازی|فعالسازی|امنیتی|یک\s*بار\s*مصرف|یکبارمصرف)?|رمز\s*(?:ورود|شما|پویا|موقت|یکبارمصرف|یک\s*بار\s*مصرف)?|شناسه\s*ورود|otp|o\.t\.p|one\s*time\s*password|verification\s*code|login\s*code|security\s*code|passcode|pin|code|password)`
+
+  // ۱) قوی‌ترین حالت: کلمه کلیدی قبل از کد آمده باشد.
+  const afterKeyword = new RegExp(`${keyword}[^0-9]{0,20}([0-9]{4,16})`, 'i')
+  const m1 = t.match(afterKeyword)
+  const c1 = m1?.[1] ? cleanCandidateCode(m1[1]) : null
+  if (c1) return c1
+
+  // ۲) حالت برعکس: کد قبل از کلمه کلیدی آمده باشد.
+  const beforeKeyword = new RegExp(`(?:^|\\D)([0-9]{4,8})[^0-9]{0,20}${keyword}`, 'i')
+  const m2 = t.match(beforeKeyword)
+  const c2 = m2?.[1] ? cleanCandidateCode(m2[1]) : null
+  if (c2) return c2
+
+  // ۳) fallback امن: عدد ۶ رقمی جدا، چون رایج‌ترین کد OTP است.
+  const six = t.match(/(?:^|\D)([0-9]{6})(?:\D|$)/)
+  if (six?.[1]) return six[1]
+
+  // ۴) fallback ضعیف‌تر: عدد ۴ تا ۸ رقمی، با حذف موارد واضحِ تاریخ/شماره تلفن.
+  const groups = Array.from(t.matchAll(/(?:^|\D)([0-9]{4,8})(?:\D|$)/g)).map((x) => x[1])
+  for (const g of groups) {
+    if (/^(13|14|20)\d{2,6}$/.test(g) && g.length >= 8) continue // شبیه تاریخ
+    if (/^09\d+/.test(g) || /^98\d+/.test(g)) continue // شبیه موبایل
+    return g
+  }
+
+  return null
+}
+
+function parseSmsForDisplay(raw: string) {
+  let rest = String(raw || '').trim()
+  const sender = rest.match(/^\s*(\+98\d{10}|09\d{9})/)?.[1] || ''
+  if (sender) rest = rest.slice(rest.indexOf(sender) + sender.length).trim()
+
+  const time = rest.match(/^\s*(\d{1,2}\/\d{1,2},?\s*\d{1,2}:\d{2}\s*(?:am|pm)?)/i)?.[1] || ''
+  if (time) rest = rest.slice(rest.indexOf(time) + time.length).trim()
+
+  const code = extractSmsCode(raw)
+  let message = rest || raw
+  if (code) {
+    message = message
+      .replace(/(کد\s*ورود\s*)[:：]?\s*([0-9۰-۹٠-٩]{4,6})/i, `کد ورود: ${code}`)
+      .replace(new RegExp(`(کد ورود:\s*${code})(?=\S)`), '$1\n')
+  }
+  message = message
+    .replace(/\s*(کد\s*ورود\s*:)/i, '\n$1')
+    .replace(/^\n+/, '')
+    .trim()
+
+  return { sender, time, code, message }
+}
+
 export default function SmsForwardCenter() {
   const [accounts, setAccounts] = useState<SmsAccount[]>([])
   const [messages, setMessages] = useState<SmsMsg[]>([])
@@ -53,7 +136,11 @@ export default function SmsForwardCenter() {
     }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+    const id = setInterval(load, 15000)
+    return () => clearInterval(id)
+  }, [load])
 
   const webhookUrl = (token: string) => `${typeof window !== 'undefined' ? window.location.origin : ''}/api/sms/webhook/${token}`
 
@@ -72,6 +159,29 @@ export default function SmsForwardCenter() {
       toast.success('آدرس وبهوک ساخته شد')
     } catch {
       toast.error('خطا در ساخت وبهوک')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const testWebhook = async (account: SmsAccount) => {
+    if (!account.smsWebhookToken) return
+    setBusyId(account.id)
+    try {
+      const res = await fetch(`/api/sms/webhook/${account.smsWebhookToken}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: account.phone || 'test',
+          message: `پیام تست فوروارد پیامک برای ${account.accountName} https://barname.utcms.ir/Barname/Home/Index`,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.success) throw new Error(data.error || 'ارسال تست ناموفق بود')
+      toast.success('پیام تست دریافت شد')
+      await load()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'خطا در تست وبهوک')
     } finally {
       setBusyId(null)
     }
@@ -178,7 +288,53 @@ export default function SmsForwardCenter() {
                       </div>
                       <span className="text-xs text-muted-foreground">{new Date(m.createdAt).toLocaleString('fa-IR')}</span>
                     </div>
-                    <p className="text-sm bg-muted/50 rounded-md p-2 break-words">{m.rawText}</p>
+                    {(() => {
+                      const parsed = parseSmsForDisplay(m.rawText)
+                      return (
+                        <div className="rounded-md border bg-muted/40 p-3 space-y-2">
+                          <div className="grid gap-2 md:grid-cols-3 text-xs">
+                            <div>
+                              <span className="text-muted-foreground">فرستنده: </span>
+                              <code dir="ltr" className="font-mono">{m.fromNumber || parsed.sender || '—'}</code>
+                            </div>
+                            {parsed.time && (
+                              <div>
+                                <span className="text-muted-foreground">زمان پیامک: </span>
+                                <code dir="ltr" className="font-mono">{parsed.time}</code>
+                              </div>
+                            )}
+                            <div>
+                              <span className="text-muted-foreground">دریافت در پنل: </span>
+                              <span>{new Date(m.createdAt).toLocaleString('fa-IR')}</span>
+                            </div>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground mb-1">متن مرتب‌شده پیامک:</p>
+                            <pre className="whitespace-pre-wrap break-words rounded bg-background/70 p-2 text-sm leading-7 font-sans" dir="auto">{parsed.message}</pre>
+                          </div>
+                          <details className="text-xs text-muted-foreground">
+                            <summary className="cursor-pointer">نمایش متن خام دریافتی</summary>
+                            <pre className="mt-2 whitespace-pre-wrap break-words rounded bg-background/70 p-2 font-mono" dir="ltr">{m.rawText}</pre>
+                          </details>
+                        </div>
+                      )
+                    })()}
+                    {looksLikeUnreplacedSmsPlaceholder(m) && (
+                      <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+                        متن پیامک یا فرستنده به‌صورت placeholder خام دریافت شده است. یعنی تنظیمات برنامه SMS Forwarder اشتباه است و متغیرها جایگزین نشده‌اند. در اپ گوشی از گزینه Insert variable/متغیر استفاده کنید تا مقدار واقعی پیامک ارسال شود، نه متن‌هایی مثل {'{msg}'}، {'{message}'} یا {'{sender}'}.
+                      </div>
+                    )}
+                    {extractSmsCode(m.rawText) && (
+                      <div className="flex items-center justify-between gap-2 rounded-md border border-green-500/25 bg-green-500/10 p-2 text-xs">
+                        <div>
+                          <span className="text-muted-foreground">کد ورود استخراج‌شده: </span>
+                          <code className="text-base font-bold tracking-widest" dir="ltr">{extractSmsCode(m.rawText)}</code>
+                        </div>
+                        <Button size="sm" variant="outline" onClick={() => copy(extractSmsCode(m.rawText) || '')}>
+                          <Copy className="size-3" />کپی کد
+                        </Button>
+                      </div>
+                    )}
                     {m.extractedLink && (
                       <div className="flex items-center gap-2 text-xs">
                         <Link2 className="size-3 text-primary" />
@@ -214,7 +370,10 @@ export default function SmsForwardCenter() {
             <CardHeader><CardTitle>راهنما</CardTitle></CardHeader>
             <CardContent className="text-sm text-muted-foreground space-y-1">
               <p>۱. برای هر حساب یک آدرس وبهوک بساز و روی گوشی‌ای که پیامک‌های همان حساب را دریافت می‌کند، اپ فورواردر SMS را طوری تنظیم کن که به این آدرس POST بزند.</p>
-              <p>۲. بدنه پیامک باید یکی از فیلدهای message/text/body را داشته باشد (اکثر اپ‌های فورواردر این‌ها را پشتیبانی می‌کنند).</p>
+              <p>۲. بدنه پیامک می‌تواند یکی از فیلدهای message/text/body/sms/content/key/msg را داشته باشد.</p>
+              <p>قالب پیش‌فرض بعضی اپ‌ها همین است و پشتیبانی می‌شود: <code dir="ltr">{'{'}"key":"{'{'}msg{'}'}","time":"{'{'}time{'}'}"{'}'}</code></p>
+              <p>نمونه پیشنهادی اگر اپ اجازه ویرایش JSON می‌دهد: <code dir="ltr">{'{'}"key":"متغیر متن پیامک","time":"متغیر زمان"{'}'}</code></p>
+              <p>اگر داخل پنل متن‌هایی مثل <code>{'{msg}'}</code>، <code>{'{message}'}</code> یا <code>{'{sender}'}</code> دیدی، یعنی برنامه گوشی متغیرها را جایگزین نکرده و باید از دکمه/منوی Insert variable خود همان اپ استفاده کنی.</p>
               <p>۳. وقتی پیامک حاوی لینک برسد، در تب «پیامک‌های دریافتی» می‌توانی با دکمه «استفاده از لینک» آن را در همان نشست مرورگر حساب باز کنی.</p>
             </CardContent>
           </Card>
@@ -245,7 +404,10 @@ export default function SmsForwardCenter() {
                       {a.smsWebhookToken ? (
                         <>
                           <Input readOnly value={webhookUrl(a.smsWebhookToken)} className="font-mono text-xs" />
-                          <Button size="icon" variant="outline" onClick={() => copy(webhookUrl(a.smsWebhookToken!))}><Copy className="size-4" /></Button>
+                          <Button size="icon" variant="outline" onClick={() => copy(webhookUrl(a.smsWebhookToken!))} title="کپی آدرس"><Copy className="size-4" /></Button>
+                          <Button size="sm" variant="outline" onClick={() => testWebhook(a)} disabled={busyId === a.id} title="ارسال پیام تست">
+                            تست
+                          </Button>
                           <Button size="icon" variant="outline" onClick={() => generateToken(a.id)} disabled={busyId === a.id} title="ساخت آدرس جدید">
                             {busyId === a.id ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                           </Button>

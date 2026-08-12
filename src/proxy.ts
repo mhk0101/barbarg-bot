@@ -3,7 +3,13 @@ import { NextRequest, NextResponse } from 'next/server'
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
 
-  if (pathname.startsWith('/api/auth/login') || pathname.startsWith('/api/auth/logout') || pathname.startsWith('/api/health')) {
+  if (
+    pathname.startsWith('/api/auth/login') ||
+    pathname.startsWith('/api/auth/logout') ||
+    pathname.startsWith('/api/health') ||
+    pathname.startsWith('/api/network/status') ||
+    pathname.startsWith('/api/sms/webhook')
+  ) {
     return NextResponse.next()
   }
 

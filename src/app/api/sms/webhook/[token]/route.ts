@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { extractSmsCode } from '@/lib/sms-code'
 
 // Matches SMS-forwarder apps (SMS Forwarder, Macrodroid, Tasker, etc.) posting
 // either JSON or x-www-form-urlencoded bodies. Field names vary between apps,
 // so we accept several common aliases.
-const TEXT_FIELDS = ['message', 'text', 'body', 'sms', 'content']
-const FROM_FIELDS = ['from', 'sender', 'number', 'originator']
+// نام فیلد متن پیامک در برنامه‌های مختلف متفاوت است.
+// بعضی SMS Forwarderها قالب پیش‌فرضی مثل { "key":"{msg}", "time":"{time}" } دارند؛
+// بنابراین key و msg را هم به‌عنوان متن پیامک قبول می‌کنیم.
+const TEXT_FIELDS = ['message', 'text', 'body', 'sms', 'content', 'key', 'msg']
+const FROM_FIELDS = ['from', 'sender', 'number', 'originator', 'phone', 'mobile']
 const LINK_REGEX = /https?:\/\/[^\s"'<>]+/i
 
 async function parseBody(request: NextRequest): Promise<Record<string, unknown>> {
@@ -32,6 +36,21 @@ async function parseBody(request: NextRequest): Promise<Record<string, unknown>>
   }
 }
 
+
+
+async function cleanupExpiredCodeMessages() {
+  const cutoff = new Date(Date.now() - 30 * 60 * 1000)
+  const old = await prisma.smsMessage.findMany({
+    where: { createdAt: { lt: cutoff } },
+    select: { id: true, rawText: true, resultMessage: true },
+    take: 500,
+  }).catch(() => [])
+  const ids = old
+    .filter((m) => extractSmsCode(`${m.rawText || ''} ${m.resultMessage || ''}`))
+    .map((m) => m.id)
+  if (ids.length) await prisma.smsMessage.deleteMany({ where: { id: { in: ids } } }).catch(() => {})
+}
+
 function pickField(body: Record<string, unknown>, keys: string[]): string | null {
   for (const key of keys) {
     const val = body[key]
@@ -43,6 +62,7 @@ function pickField(body: Record<string, unknown>, keys: string[]): string | null
 export async function POST(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   const { token } = await params
   if (!token) return NextResponse.json({ error: 'توکن الزامی است' }, { status: 400 })
+  await cleanupExpiredCodeMessages()
 
   const account = await prisma.barBargAccount.findUnique({ where: { smsWebhookToken: token } })
   if (!account) return NextResponse.json({ error: 'توکن نامعتبر است' }, { status: 404 })
@@ -54,6 +74,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const fromNumber = pickField(body, FROM_FIELDS)
   const linkMatch = rawText.match(LINK_REGEX)
   const extractedLink = linkMatch ? linkMatch[0] : null
+  const extractedCode = extractSmsCode(rawText)
 
   const sms = await prisma.smsMessage.create({
     data: {
@@ -61,6 +82,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       fromNumber,
       rawText,
       extractedLink,
+      resultMessage: extractedCode ? `کد ورود: ${extractedCode}` : null,
       status: 'pending',
     },
   })
@@ -70,6 +92,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     id: sms.id,
     accountId: account.id,
     extractedLink,
+    extractedCode,
   })
 }
 
@@ -77,6 +100,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 export async function GET(request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   const { token } = await params
   if (!token) return NextResponse.json({ error: 'توکن الزامی است' }, { status: 400 })
+  await cleanupExpiredCodeMessages()
 
   const account = await prisma.barBargAccount.findUnique({ where: { smsWebhookToken: token } })
   if (!account) return NextResponse.json({ error: 'توکن نامعتبر است' }, { status: 404 })
@@ -91,10 +115,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const fromNumber = pickField(body, FROM_FIELDS)
   const linkMatch = rawText.match(LINK_REGEX)
   const extractedLink = linkMatch ? linkMatch[0] : null
+  const extractedCode = extractSmsCode(rawText)
 
   const sms = await prisma.smsMessage.create({
-    data: { accountId: account.id, fromNumber, rawText, extractedLink, status: 'pending' },
+    data: { accountId: account.id, fromNumber, rawText, extractedLink, resultMessage: extractedCode ? `کد ورود: ${extractedCode}` : null, status: 'pending' },
   })
 
-  return NextResponse.json({ success: true, id: sms.id, accountId: account.id, extractedLink })
+  return NextResponse.json({ success: true, id: sms.id, accountId: account.id, extractedLink, extractedCode })
 }

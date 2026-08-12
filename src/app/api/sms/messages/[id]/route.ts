@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/auth/permissions'
 import { prisma } from '@/lib/prisma'
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
+
   try {
     const { id } = await params
     const body = await request.json()
     const updateData: Record<string, unknown> = {}
     if (body.status !== undefined) updateData.status = body.status
-    if (body.accountId !== undefined) updateData.accountId = body.accountId
+    if (body.accountId !== undefined) updateData.accountId = body.accountId || null
     const item = await prisma.smsMessage.update({ where: { id }, data: updateData })
     return NextResponse.json(item)
   } catch (e: unknown) {
@@ -15,7 +19,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
 }
 
-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
+
   try {
     const { id } = await params
     await prisma.smsMessage.delete({ where: { id } })

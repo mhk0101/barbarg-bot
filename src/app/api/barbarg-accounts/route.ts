@@ -46,7 +46,8 @@ export async function GET(request: NextRequest) {
         skip: (page - 1) * limit, take: limit,
         select: {
           id: true, accountName: true, username: true, company: true, status: true,
-          lastLogin: true, lastError: true, notes: true, createdAt: true, updatedAt: true,
+          lastLogin: true, lastError: true, notes: true, phone: true, smsWebhookToken: true,
+          createdAt: true, updatedAt: true,
         },
       }),
       prisma.barBargAccount.count({ where }),
