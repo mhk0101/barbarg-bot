@@ -71,9 +71,7 @@ export async function POST(request: NextRequest) {
     if (!body.accountName || !body.username || !body.password) {
       return NextResponse.json({ error: 'نام حساب، نام کاربری و رمز عبور الزامی است' }, { status: 400 })
     }
-    const existing = await prisma.barBargAccount.findUnique({ where: { username: body.username } })
-    if (existing) return NextResponse.json({ error: 'نام کاربری تکراری است' }, { status: 400 })
-
+    // چند حساب می‌توانند نام کاربری یکسان داشته باشند؛ کاربر خودش با «نام حساب» آن‌ها را تفکیک می‌کند.
     const encrypted = encryptPassword(body.password)
     const account = await prisma.barBargAccount.create({
       data: {

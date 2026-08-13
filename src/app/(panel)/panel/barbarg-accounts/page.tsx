@@ -334,7 +334,7 @@ export default function BarbargAccountsPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={importDialogOpen} onOpenChange={(open) => { if (!open && importingId) handleCancelImport(); else setImportDialogOpen(open) }}>
+      <Dialog open={importDialogOpen} onOpenChange={(open) => { if (importSession?.status === 'running' && !open) return; setImportDialogOpen(open) }}>
         <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -387,14 +387,15 @@ export default function BarbargAccountsPage() {
           )}
 
           <div className="flex justify-end gap-2 pt-2 border-t">
-            {importSession?.status === 'running' && (
-              <Button variant="destructive" onClick={handleCancelImport}>
+            {importSession?.status === 'running' ? (
+              <Button variant="destructive" onClick={handleCancelImport} disabled={!importingId}>
                 توقف عملیات
               </Button>
+            ) : (
+              <Button variant="outline" onClick={() => setImportDialogOpen(false)}>
+                بستن
+              </Button>
             )}
-            <Button variant="outline" onClick={() => { if (importSession?.status === 'running') handleCancelImport(); else setImportDialogOpen(false) }}>
-              {importSession?.status === 'running' ? 'بستن و توقف' : 'بستن'}
-            </Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -441,9 +442,9 @@ export default function BarbargAccountsPage() {
                 </div>
               </div>
 
-              {loginSession.lastCheck && (
+              {loginSession.lastCheck && loginSession.status !== 'login_success' && (
                 <div className="rounded-lg bg-destructive/5 border border-destructive/20 p-3 text-sm text-destructive">
-                  <span className="font-medium">پیام سایت:</span> {loginSession.lastCheck}
+                  <span className="font-medium">پیام:</span> {loginSession.lastCheck}
                 </div>
               )}
 

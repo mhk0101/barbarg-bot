@@ -488,7 +488,7 @@ model QuickRegistrationJob {
 model BarBargAccount {
   id              String    @id @default(cuid())
   accountName     String
-  username        String    @unique
+  username        String
   passwordEncrypted String
   company         String?
   status          String    @default("active")

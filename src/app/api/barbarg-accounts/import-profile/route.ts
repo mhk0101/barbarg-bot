@@ -47,6 +47,7 @@ interface ImportSession {
   updatedAt: number
   stopRequested: boolean
   attempt: number
+  browser?: any
 }
 const importSessions = new Map<string, ImportSession>()
 const FINISHED_KEEP_MS = 30 * 60 * 1000
@@ -137,7 +138,11 @@ export async function POST(request: NextRequest) {
       const s = importSessions.get(accountId)
       if (s && s.status === 'running') {
         s.stopRequested = true
-        pushImportLog(s, 'درخواست توقف توسط کاربر ثبت شد؛ بعد از پایان مرحله جاری متوقف می‌شود')
+        s.status = 'cancelled'
+        s.error = 'توسط کاربر متوقف شد'
+        pushImportLog(s, 'عملیات توسط کاربر متوقف شد')
+        if (s.browser) await s.browser.close().catch(() => {})
+        finishImportSession(s, 'cancelled', 'توسط کاربر متوقف شد')
       }
       return NextResponse.json({ success: true })
     }
@@ -155,7 +160,7 @@ export async function POST(request: NextRequest) {
 
       const session: ImportSession = {
         accountId, status: 'running', logs: [], error: null, data: null, profileId: null,
-        startedAt: Date.now(), updatedAt: Date.now(), stopRequested: false, attempt: 0,
+        startedAt: Date.now(), updatedAt: Date.now(), stopRequested: false, attempt: 0, browser: null,
       }
       importSessions.set(accountId, session)
       pushImportLog(session, `شروع دریافت اطلاعات برای حساب «${account.accountName}»؛ تا زمان توقف کاربر ادامه می‌دهد`)
@@ -170,10 +175,12 @@ export async function POST(request: NextRequest) {
               credentials: { username: account.username, password: decryptPassword(account.passwordEncrypted) },
               headless: process.env.BARBARG_HEADLESS === 'true',
               fast: true,
+              onBrowser: (browser: any) => { session.browser = browser },
+              shouldStop: () => session.stopRequested || session.status === 'cancelled',
               onLog: (line: string) => pushImportLog(session, line),
             })
 
-            if (session.stopRequested) break
+            if (session.stopRequested || result.kind === 'stopped') break
 
             if (result.success) {
               await prisma.barBargAccount.update({ where: { id: account.id }, data: { lastLogin: new Date(), lastError: null } }).catch(() => {})
@@ -204,22 +211,26 @@ export async function POST(request: NextRequest) {
             pushImportLog(session, `خطا (${kind}): ${err}`)
             await prisma.barBargAccount.update({ where: { id: account.id }, data: { lastError: err } }).catch(() => {})
 
-            if (kind === 'bad_credentials' || kind === 'account_locked' || kind === 'no_history') {
-              if (kind === 'bad_credentials' || kind === 'account_locked') {
-                await prisma.barBargAccount.update({ where: { id: account.id }, data: { status: 'inactive', lastError: err } }).catch(() => {})
-              }
+            if (kind === 'no_history') {
               finishImportSession(session, 'failed', err)
               return
             }
 
-            const wait = importWaitMs(kind)
+            const wait = (kind === 'bad_credentials' || kind === 'account_locked')
+              ? 60 * 1000
+              : importWaitMs(kind)
+            if (kind === 'bad_credentials' || kind === 'account_locked') {
+              pushImportLog(session, 'هشدار: سایت/کپچا ممکن است موقتاً خطای نام کاربری یا رمز داده باشد؛ حساب غیرفعال نمی‌شود و دوباره از صفر تلاش می‌کنم')
+            }
             pushImportLog(session, `خطا قابل تلاش مجدد است؛ ${Math.round(wait / 1000)} ثانیه صبر می‌کنم و دوباره از صفر شروع می‌کنم`)
             await sleepAbortable(wait, session)
           } catch (e) {
             const msg = e instanceof Error ? e.message : 'خطای غیرمنتظره'
-            if (session.stopRequested || /توسط کاربر متوقف/.test(msg)) break
+            if (session.stopRequested || /توسط کاربر متوقف|Target page, context or browser has been closed|Target closed|browser has been closed/i.test(msg)) break
             pushImportLog(session, `خطای غیرمنتظره: ${msg}`)
             await sleepAbortable(15000, session)
+          } finally {
+            session.browser = null
           }
         }
         pushImportLog(session, 'عملیات توسط کاربر متوقف شد')
@@ -248,18 +259,12 @@ export async function POST(request: NextRequest) {
     })
 
     if (!result.success) {
-      // مشخصات اشتباه ⇒ حساب را غیرفعال کن (مثل مسیر اتوماسیون)
-      if (result.kind === 'bad_credentials' || result.kind === 'account_locked') {
-        await prisma.barBargAccount.update({
-          where: { id: account.id },
-          data: { status: 'inactive', lastError: result.error },
-        }).catch(() => {})
-      } else {
-        await prisma.barBargAccount.update({
-          where: { id: account.id },
-          data: { lastError: result.error },
-        }).catch(() => {})
-      }
+      // در مسیر دریافت اطلاعات، حتی اگر سایت خطای نام کاربری/رمز داد، حساب را غیرفعال نمی‌کنیم؛
+      // چون این مسیر ممکن است به‌خاطر کپچا/اختلال سایت به‌اشتباه چنین خطایی بگیرد.
+      await prisma.barBargAccount.update({
+        where: { id: account.id },
+        data: { lastError: result.error },
+      }).catch(() => {})
 
       /* حتی وقتی تاریخچه خالی است، نام دارنده‌ی حساب را از نوار بالای
          سایت خوانده‌ایم — همان را در نام حساب ذخیره کن تا هدر نرود. */

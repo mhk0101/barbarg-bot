@@ -2231,6 +2231,16 @@ async function readSwalError(page) {
   }).catch(() => '')
 }
 
+async function waitForSwalError(page, ms = 3000) {
+  const t0 = Date.now()
+  while (Date.now() - t0 < ms) {
+    const e = await readSwalError(page)
+    if (e) return e
+    await page.waitForTimeout(300).catch(() => {})
+  }
+  return ''
+}
+
 async function readServerConnectionTableError(page) {
   return page.evaluate(() => {
     const cells = Array.from(document.querySelectorAll('td[colspan]'))
@@ -3780,7 +3790,7 @@ async function scrapeBarnameDetail(page) {
  * خروجی: { success, data, error, raw }
  */
 async function importLastBarname(opts) {
-  const { credentials, headless = false, onLog = null } = opts
+  const { credentials, headless = false, onLog = null, onBrowser = null, shouldStop = null } = opts
   // سرعت دریافت اطلاعات از آخرین بارنامه: پیش‌فرض جدید مثل تب اتوماسیون سریع است.
   // اگر روزی خواستی حالت خیلی آرام قبلی را برگردانی، fast:false پاس بده.
   const fast = opts.fast !== false
@@ -3794,6 +3804,7 @@ async function importLastBarname(opts) {
     args: ['--start-maximized', '--no-sandbox', '--disable-blink-features=AutomationControlled'],
   }
   const browser = await chromium.launch(LAUNCH)
+  if (onBrowser) { try { onBrowser(browser) } catch (e) {} }
   const ctx = await browser.newContext({ viewport: null, locale: 'fa-IR', timezoneId: 'Asia/Tehran' })
   const page = await ctx.newPage()
 
@@ -3832,6 +3843,11 @@ async function importLastBarname(opts) {
     : humanClick(page, sel)
 
   const done = async (r) => { await browser.close().catch(() => {}); return r }
+  const stopRequested = async () => {
+    if (!shouldStop) return false
+    try { return await shouldStop() } catch (e) { return false }
+  }
+  if (await stopRequested()) return done({ success: false, error: 'توسط کاربر متوقف شد', kind: 'stopped' })
 
   try { await assertGeneralInternet('دریافت اطلاعات آخرین بارنامه') }
   catch (e) { return done({ success: false, error: String((e && e.message) || e), kind: 'block' }) }
@@ -3840,6 +3856,7 @@ async function importLastBarname(opts) {
     console.log(`حساب: ${credentials.username}`)
     console.log('\n→ ورود به سامانه...')
 
+    if (await stopRequested()) return done({ success: false, error: 'توسط کاربر متوقف شد', kind: 'stopped' })
     const nav = await gotoR(page, LOGIN_URL, 'صفحه ورود')
     if (nav === 'BLOCKED') {
       return done({ success: false, error: 'IP بلاک شد — چند دقیقه بعد دوباره تلاش کنید', kind: 'block' })
@@ -3909,6 +3926,7 @@ async function importLastBarname(opts) {
     await iMedium()
 
     // ── صفحه‌ی تاریخچه ──
+    if (await stopRequested()) return done({ success: false, error: 'توسط کاربر متوقف شد', kind: 'stopped' })
     console.log('\n→ باز کردن تاریخچه‌ی بارنامه‌ها...')
     await iLong()   // انسان بلافاصله صفحه عوض نمی‌کند
     const navHist = await gotoR(page, HISTORY_URL, 'تاریخچه')
@@ -4070,6 +4088,10 @@ async function importLastBarname(opts) {
 
     return done({ success: true, data: profile, raw, history: historyRows })
   } catch (e) {
+    if (await stopRequested()) {
+      console.log('   ⏹ عملیات توسط کاربر متوقف شد')
+      return done({ success: false, error: 'توسط کاربر متوقف شد', kind: 'stopped' })
+    }
     const msg = String((e && e.message) || e).split('\n')[0].slice(0, 200)
     console.log(`   ✖ خطای غیرمنتظره: ${msg}`)
     return done({
