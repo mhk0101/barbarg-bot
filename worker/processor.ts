@@ -46,6 +46,12 @@ const DO_SUBMIT = process.env.BARBARG_SUBMIT !== 'false'   // پیش‌فرض: �
 /** مرورگر دیده شود یا نه (مثل تستر پیش‌فرض دیده می‌شود) */
 const HEADLESS = process.env.BARBARG_HEADLESS === 'true'
 
+/** 🖥 [موقت] فقط در «قسمت اتوماسیون» (ورکر): بعد از رسیدن به گام آخر،
+    مرورگر را باز نگه دار — هر نتیجه‌ای که بود (موفق یا ناموفق).
+    پیش‌فرض روشن است. برای خاموش‌کردن موقت: BARBARG_KEEP_OPEN_ON_FINAL=false
+    برای حذف کامل این قابلیت: همین بلاک و خط `keepOpenOnFinal:` پایین را بردارید. */
+const KEEP_OPEN_ON_FINAL = process.env.BARBARG_KEEP_OPEN_ON_FINAL !== 'false'
+
 /** خطاهایی که تکرارشان بی‌فایده است */
 const PERMANENT = /مختصات انتخابی نامعتبر|کد ملی|کدملی|شناسه ملی|اعتبار کافی|موجودی|تکراری|مجوز|دسترسی ندارید|رمز|کلمه عبور|کاربری یافت نشد|قفل|مسدود|غیرفعال|صدور غیر مجاز بارنامه شهری|محدودیت در صدور بارنامه شهری|لیست سیاه سامانه|لیست سیاه/
 
@@ -134,9 +140,11 @@ async function notify(title: string, message: string, type: 'info' | 'success' |
 }
 
 function createOtpCodeProvider(accountId: string, listenAfter: Date, taskId: string) {
-  let cachedCode = ''
+  /* پیامک‌هایی که قبلاً خوانده و «استفاده‌شده» شده‌اند را دنبال می‌کنیم تا
+     در تلاش بعدی همان کد قدیمی برنگردد و در عوض پیامک جدیدتر خوانده شود.
+     (قبلا کد یک بار کش می‌شد و تلاش دوم همیشه همان کد قبلی را می‌گرفت.) */
+  const usedSmsIds = new Set<string>()
   return async () => {
-    if (cachedCode) return cachedCode
     const smsList = await prisma.smsMessage.findMany({
       where: {
         accountId,
@@ -148,15 +156,16 @@ function createOtpCodeProvider(accountId: string, listenAfter: Date, taskId: str
     }).catch(() => [])
 
     for (const sms of smsList) {
+      if (usedSmsIds.has(sms.id)) continue
       const code = extractSmsCode(`${sms.rawText || ''} ${sms.resultMessage || ''}`)
       if (!code) continue
-      cachedCode = code
+      usedSmsIds.add(sms.id)
       await prisma.smsMessage.update({
         where: { id: sms.id },
         data: { status: 'used', usedAt: new Date(), resultMessage: `کد ورود برای ثبت نهایی استفاده شد: ${code}` },
       }).catch(() => {})
-      await log(taskId, 'success', `کد پیامکی مربوط به حساب دریافت شد و برای OTP نهایی استفاده می‌شود: ${code}`)
-      return cachedCode
+      await log(taskId, 'success', `کد پیامکی جدید دریافت شد و برای OTP نهایی استفاده می‌شود: ${code}`)
+      return code
     }
     return ''
   }
@@ -273,6 +282,7 @@ export async function processWaybillJob(taskId: string): Promise<void> {
       submit: DO_SUBMIT,
       headless: HEADLESS,
       maxRestarts: MAX_RESTARTS,
+      keepOpenOnFinal: KEEP_OPEN_ON_FINAL,
       getOtpCode,
       onLog: (line: string) => {
         const clean = String(line).replace(/^\s*\n/, '').trim()
@@ -416,32 +426,39 @@ export async function processWaybillJob(taskId: string): Promise<void> {
        dead / login → مشکل محلی است، تکرار منطقی است */
     const engineExhausted = ['block', 'waf'].includes(kind)
 
+    /* ─── کد یکبارمصرف (OTP) ───
+       از قیف «غیرفعال‌سازی حساب» جدا شد: نرسیدن یا ثبت‌نشدن کد پیامکی
+       لزوماً مشکل حساب نیست (ممکن است پیامک دیر برسد یا اپراتور مشکل
+       داشته باشد). فقط همین وظیفه ناموفق می‌شود و جزئیات ثبت می‌گردد. */
+    if (kind === 'otp_failed') {
+      await log(taskId, 'error', errMsg)
+      await log(taskId, 'warn', 'کد یکبارمصرف کامل نشد — وظیفه ناموفق ثبت شد ولی حساب غیرفعال نشد (ممکن است پیامک دیر رسیده باشد)')
+      await notify('کد یکبارمصرف حساب باربگ ثبت نشد', `پلاک ${profile.plateNumber}: ${errMsg}`, 'warning')
+      await prisma.job.update({ where: { id: taskId }, data: { status: 'failed', error: errMsg, completedAt: new Date() } })
+      await createErrorLog(taskId, errMsg)
+      return
+    }
+
     /* ─── خطاهای قطعی مربوط به خود حساب باربگ ───
        این خطاها با تکرار حل نمی‌شوند. علاوه بر متوقف کردن این وظیفه:
          ۱) حساب غیرفعال می‌شود تا بقیه‌ی وظایف هم بی‌خود تلاش نکنند
          ۲) وظایف در انتظار همین حساب لغو می‌شوند
          ۳) اعلان ساخته می‌شود تا کاربر فورا بفهمد
        نمونه‌ها: رمز اشتباه، حساب قفل/مسدود، محدودیت موقت صدور بارنامه شهری. */
-    if (kind === 'bad_credentials' || kind === 'account_locked' || kind === 'account_restricted' || kind === 'otp_failed') {
+    if (kind === 'bad_credentials' || kind === 'account_locked' || kind === 'account_restricted') {
       const isLocked = kind === 'account_locked'
       const isRestricted = kind === 'account_restricted'
-      const isOtpFailed = kind === 'otp_failed'
-      const title = isOtpFailed
-        ? 'کد یکبارمصرف حساب باربگ ثبت نشد'
-        : (isRestricted
-            ? 'حساب باربگ برای صدور بارنامه شهری محدود شده است'
-            : (isLocked ? 'حساب باربگ مسدود است' : 'مشخصات حساب باربگ اشتباه است'))
+      const title = isRestricted
+        ? 'حساب باربگ برای صدور بارنامه شهری محدود شده است'
+        : (isLocked ? 'حساب باربگ مسدود است' : 'مشخصات حساب باربگ اشتباه است')
 
       await log(taskId, 'error', errMsg)
-      if (isOtpFailed) {
-        await log(taskId, 'error', 'بعد از ۲ تلاش کامل، کد یکبارمصرف دریافت/ثبت نشد؛ عملیات‌های این اکانت متوقف می‌شود')
-      }
       await log(taskId, 'error', `حساب «${account.accountName}» (${account.username}) غیرفعال شد`)
 
       // ۱) حساب را غیرفعال کن
       await prisma.barBargAccount.update({
         where: { id: account.id },
-        data: { status: 'disabled', lastError: errMsg },
+        data: { status: 'inactive', lastError: errMsg },
       }).catch(() => {})
 
       // ۲) وظایف در انتظار همین حساب را لغو کن

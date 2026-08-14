@@ -1783,25 +1783,52 @@ async function fillFareStep(page, fare, OUT, tag, verbose = true) {
 
 
 /* ── OTP نهایی سایت، بعد از کلیک ثبت نهایی ── */
+
+/** شناسه‌های احتمالی مودال OTP — سایت گاهی شناسه/ساختار را عوض می‌کند */
+const OTP_MODAL_IDS = ['GetOptCodeModal', 'GetOtpCodeModal', 'OtpModal', 'otpModal', 'getOptCodeModal', 'SendOtpCodeModal']
+
 async function isOtpModalVisible(page) {
-  return page.evaluate(() => {
-    const m = document.getElementById('GetOptCodeModal')
-    if (!m) return false
-    const st = window.getComputedStyle(m)
-    return st.display !== 'none' && st.visibility !== 'hidden' && m.classList.contains('show')
-  }).catch(() => false)
+  return page.evaluate((ids) => {
+    // ۱) مودال‌های شناخته‌شده
+    for (const id of ids) {
+      const m = document.getElementById(id)
+      if (!m) continue
+      const st = window.getComputedStyle(m)
+      if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') continue
+      const r = m.getBoundingClientRect()
+      if (r.width > 0 && r.height > 0) return true
+    }
+    // ۲) پشتیبان: هر باکس OTP نمایان (اگر ساختار مودال عوض شده باشد)
+    const boxes = Array.from(document.querySelectorAll('input.otp-box, input.otp-input, input.otp-code, input[data-otp]')).filter((b) => b.type !== 'hidden')
+    for (const b of boxes) {
+      const st = window.getComputedStyle(b)
+      if (st.display === 'none' || st.visibility === 'hidden') continue
+      const r = b.getBoundingClientRect()
+      if (r.width > 0 && r.height > 0) return true
+    }
+    return false
+  }, OTP_MODAL_IDS).catch(() => false)
 }
 
+/**
+ * کد OTP را در باکس‌های مودال می‌ریزد و دکمه ثبت را می‌زند.
+ * خروجی: { ok, reason?, boxes? }
+ */
 async function fillFinalOtpModal(page, code, verbose = true) {
   const log = (m) => { if (verbose) console.log(m) }
   const otp = String(code || '').replace(/\D/g, '').slice(0, 6)
-  if (otp.length !== 6) return false
+  if (otp.length !== 6) return { ok: false, reason: 'کد ۶ رقمی نیست' }
 
-  const ok = await page.evaluate((otp) => {
-    const modal = document.getElementById('GetOptCodeModal')
-    if (!modal) return false
-    const boxes = Array.from(modal.querySelectorAll('input.otp-box'))
-    if (boxes.length < 6) return false
+  const filled = await page.evaluate((otp) => {
+    const modal = OTP_MODAL_IDS.map((id) => document.getElementById(id)).find(Boolean)
+    const scope = modal || document
+    let boxes = Array.from(scope.querySelectorAll('input.otp-box, input.otp-input, input.otp-code, input[data-otp]')).filter((el) => el.type !== 'hidden' && el.id !== 'otp')
+    if (!boxes.length) {
+      // پشتیبان: ورودی‌های عددی تک‌کاراکتری
+      boxes = Array.from(scope.querySelectorAll('input[inputmode="numeric"][maxlength="1"], input[maxlength="1"][type="tel"], input[maxlength="1"][type="text"]')).slice(0, 6)
+    }
+    if (boxes.length < 6) return { ok: false, reason: `فقط ${boxes.length} باکس OTP پیدا شد` }
+    boxes = boxes.slice(0, 6)
     for (let i = 0; i < 6; i++) {
       const el = boxes[i]
       el.value = otp[i]
@@ -1809,47 +1836,103 @@ async function fillFinalOtpModal(page, code, verbose = true) {
       el.dispatchEvent(new Event('change', { bubbles: true }))
       el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: otp[i] }))
     }
-    const hidden = document.getElementById('otp') || modal.querySelector('input[name="otp"]')
+    const hidden = document.getElementById('otp') || (modal && modal.querySelector('input[name="otp"]'))
     if (hidden) {
       hidden.value = otp
       hidden.dispatchEvent(new Event('input', { bubbles: true }))
       hidden.dispatchEvent(new Event('change', { bubbles: true }))
     }
-    return true
-  }, otp).catch(() => false)
+    return { ok: true, boxes: boxes.length }
+  }, otp).catch(() => ({ ok: false, reason: 'خطا در پر کردن باکس‌های OTP' }))
 
-  if (!ok) return false
-  log(`   ✔ کد پیامکی ${otp} در پنجره OTP وارد شد`)
+  if (!filled.ok) return filled
+  log(`   ✔ کد پیامکی ${otp} در ${filled.boxes} باکس OTP وارد شد`)
+
   await page.waitForTimeout(300)
-  await page.click('#submitOtp').catch(async () => {
-    await page.evaluate(() => document.getElementById('submitOtp')?.click()).catch(() => {})
-  })
+  const clicked = await page.evaluate(() => {
+    const b = document.getElementById('submitOtp')
+    if (!b) return false
+    b.click()
+    return true
+  }).catch(() => false)
+  if (!clicked) return { ok: false, reason: 'دکمه ثبت OTP (#submitOtp) پیدا نشد', boxes: filled.boxes }
   log('   ➜ دکمه ثبت OTP کلیک شد')
-  await page.waitForTimeout(1500)
-  return true
+  return { ok: true, boxes: filled.boxes }
 }
 
+/**
+ * منتظر کد پیامکی می‌ماند، در مودال می‌ریزد، ثبت می‌کند و **تایید می‌کند
+ * که مودال واقعا بسته شده**. خروجی: { ok, reason?, codeReceived?, code? }
+ */
 async function waitAndSubmitFinalOtp(page, getOtpCode, timeoutMs = 60_000, verbose = true) {
   const log = (m) => { if (verbose) console.log(m) }
   if (typeof getOtpCode !== 'function') {
     log('   ✖ پنجره OTP باز شد ولی منبع دریافت کد پیامکی تعریف نشده است')
-    return false
+    return { ok: false, reason: 'منبع دریافت کد پیامکی تعریف نشده است', codeReceived: false }
   }
 
   const started = Date.now()
-  log('   🔐 پنجره کد پیامکی نمایش داده شد؛ تا ۱ دقیقه منتظر پیامک همان حساب می‌مانم...')
+  log(`   🔐 پنجره کد پیامکی نمایش داده شد؛ تا ${Math.round(timeoutMs / 1000)} ثانیه منتظر پیامک همان حساب می‌مانم...`)
   let lastCode = ''
   while (Date.now() - started < timeoutMs) {
     let code = ''
     try { code = String(await getOtpCode() || '').replace(/\D/g, '').slice(0, 6) } catch (e) { code = '' }
     if (code && code !== lastCode) {
       lastCode = code
-      if (code.length === 6) return fillFinalOtpModal(page, code, verbose)
+      if (code.length === 6) {
+        log(`   📩 کد پیامکی دریافت شد: ${code}`)
+        const r = await fillFinalOtpModal(page, code, verbose)
+        if (!r.ok) return { ok: false, reason: r.reason, codeReceived: true, code }
+
+        // تایید: صبر کن ببینیم مودال بسته می‌شود و خطایی نمی‌آید
+        let closed = false
+        for (let k = 0; k < 24; k++) {
+          await page.waitForTimeout(500)
+          const sw = await readSwalError(page)
+          if (sw) {
+            log(`   ✖ خطای سایت پس از ثبت OTP: ${sw}`)
+            return { ok: false, reason: `خطای سایت پس از ثبت OTP: ${sw}`, codeReceived: true, code }
+          }
+          if (!(await isOtpModalVisible(page))) { closed = true; break }
+        }
+        if (closed) {
+          log('   ✔ پنجره OTP بسته شد')
+          return { ok: true, codeReceived: true, code }
+        }
+        log('   ⚠ پنجره OTP هنوز باز است — کد پذیرفته نشد')
+        return { ok: false, reason: 'کد وارد شد ولی پنجره OTP بسته نشد (کد اشتباه یا خطای سرور)', codeReceived: true, code }
+      }
     }
     await page.waitForTimeout(3000)
   }
-  log('   ✖ در مهلت ۱ دقیقه‌ای، کد پیامکی مربوط به این حساب دریافت نشد')
-  return false
+  log(`   ✖ در مهلت ${Math.round(timeoutMs / 1000)} ثانیه‌ای، کد پیامکی مربوط به این حساب دریافت نشد`)
+  return { ok: false, reason: `در مهلت ${Math.round(timeoutMs / 1000)} ثانیه‌ای کد پیامکی دریافت نشد`, codeReceived: false }
+}
+
+/** وضعیت فعلی صفحه در گام آخر — برای گزارش جزئیات ناموفق */
+async function readFinalStateDetail(page) {
+  return page.evaluate(() => {
+    const g = (id) => {
+      const el = document.getElementById(id)
+      return el ? String((el.value ?? el.textContent) || '').trim() : ''
+    }
+    const otpOpen = (() => {
+      const m = document.getElementById('GetOptCodeModal') || document.getElementById('GetOtpCodeModal') || document.getElementById('OtpModal')
+      if (!m) return false
+      const st = window.getComputedStyle(m)
+      return st.display !== 'none' && st.visibility !== 'hidden'
+    })()
+    const swal = (() => {
+      const p = document.querySelector('.swal2-popup.swal2-icon-error')
+      return p && p.offsetParent !== null ? (document.getElementById('swal2-html-container')?.textContent || '').trim() : ''
+    })()
+    return [
+      `کد رهگیری: «${g('TrackingCodeNumber') || 'خالی'}»`,
+      `صفحه رسید: ${document.getElementById('trackingcode') ? 'هست' : 'نیست'}`,
+      `پنجره OTP: ${otpOpen ? 'باز' : 'بسته'}`,
+      swal ? `پاپ‌آپ خطا: «${swal}»` : '',
+    ].filter(Boolean).join(' | ')
+  }).catch(() => 'قابل خواندن نبود')
 }
 
 /* ═══════════ گام ۹: تایید + کپچا + ثبت نهایی ═══════════ */
@@ -1907,26 +1990,67 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
   let code = ''
   let swalErr = ''
   let finalSuccess = null
-  let otpHandled = false
-  for (let i = 0; i < 90; i++) {
-    if (!otpHandled && await isOtpModalVisible(page)) {
-      otpHandled = true
-      const okOtp = await waitAndSubmitFinalOtp(page, getOtpCode, 60_000, verbose)
-      if (!okOtp) {
+  let otpSeen = false        // آیا در این گام اصلا مودال OTP دیده شد؟
+  let otpCompleted = false   // آیا OTP با موفقیت ثبت و مودالش بسته شد؟
+  let otpAttempts = 0        // چند بار تلاش کردیم OTP را کامل کنیم
+  let otpDetail = ''         // جزئیات آخرین تلاش OTP (برای گزارش)
+  const MAX_OTP_ATTEMPTS = 2 // بعد از ۲ تلاش ناکام → ناموفق (otp_failed)
+  const OTP_GRACE_MS = 6000  // بعد از دیدن رسید، چند لحظه برای ظهور OTP صبر کن
+  let receiptSeenAt = 0
+
+  for (let i = 0; i < 120; i++) {
+    // ── ۱) همیشه اول چک کن: مودال OTP باز است؟ ──
+    //      سایت بعضی وقتا کد می‌خواهد بعضی وقتا نه؛ پس در هر تکرار بپاییم.
+    if (await isOtpModalVisible(page)) {
+      otpSeen = true
+      if (otpAttempts >= MAX_OTP_ATTEMPTS) {
+        const detail = await readFinalStateDetail(page)
         await page.screenshot({ path: path.join(OUT, `${tag}-otp-failed.png`), fullPage: true }).catch(() => {})
         return {
           success: false,
           kind: 'otp_failed',
-          error: 'کد یکبارمصرف پیامکی دریافت نشد یا در پنجره OTP ثبت نشد',
+          error: `کد یکبارمصرف پیامکی پس از ${MAX_OTP_ATTEMPTS} تلاش کامل نشد. ${otpDetail} | وضعیت صفحه: ${detail}`,
         }
       }
+      otpAttempts++
+      log(`   🔐 پنجره کد یکبارمصرف باز است — تلاش ${otpAttempts}/${MAX_OTP_ATTEMPTS}`)
+      const r = await waitAndSubmitFinalOtp(page, getOtpCode, 60_000, verbose)
+      if (r.ok) {
+        otpCompleted = true
+        otpDetail = `OTP در تلاش ${otpAttempts} با موفقیت ثبت و پنجره بسته شد`
+        log(`   ✔ ${otpDetail}`)
+        // بعد از OTP، منتظر کد رهگیری/رسید می‌مانیم — حلقه ادامه دارد
+        continue
+      }
+      otpDetail = `تلاش ${otpAttempts}/${MAX_OTP_ATTEMPTS} ناموفق: ${r.reason}${r.codeReceived ? ' (کد پیامکی دریافت شد ولی ثبت نشد)' : ' (کد پیامکی دریافت نشد)'}`
+      log(`   ✖ ${otpDetail}`)
+      await page.screenshot({ path: path.join(OUT, `${tag}-otp-failed-${otpAttempts}.png`), fullPage: true }).catch(() => {})
+
+      if (otpAttempts >= MAX_OTP_ATTEMPTS) {
+        const detail = await readFinalStateDetail(page)
+        return {
+          success: false,
+          kind: 'otp_failed',
+          error: `کد یکبارمصرف پیامکی پس از ${MAX_OTP_ATTEMPTS} تلاش کامل نشد. ${otpDetail} | وضعیت صفحه: ${detail}`,
+        }
+      }
+      // تلاش بعدی: مودال را ببند (اگر باز مانده) و دوباره درخواست ثبت نهایی بزن
+      await page.evaluate(() => {
+        const b = document.querySelector('#GetOptCodeModal .close, #GetOptCodeModal [data-bs-dismiss="modal"], .swal2-popup .swal2-confirm')
+        if (b) b.click()
+      }).catch(() => {})
+      await page.waitForTimeout(1500)
+      await page.click('#btnRegisterFinished').catch(() => {})
+      await page.waitForTimeout(2500)
+      continue
     }
 
+    // ── ۲) وضعیت رسید / کد رهگیری ──
     const st = await page.evaluate(() => {
       const code = (document.getElementById('TrackingCodeNumber') || {}).value || ''
       const box = document.getElementById('trackingcode')
       const text = (box ? box.innerText : document.body.innerText || '').replace(/\s+/g, ' ').trim()
-      const success = !!(
+      const receipt = !!(
         box &&
         /سند حمل بار/.test(text) &&
         /صادر گردید/.test(text) &&
@@ -1936,17 +2060,30 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
       )
       return {
         code: String(code || '').trim(),
-        success,
-        text: success ? text.slice(0, 500) : '',
+        receipt,
+        text: receipt ? text.slice(0, 500) : '',
         plate: (document.getElementById('pelakFinal') || {}).textContent || '',
         origin: (document.getElementById('OrginFinal') || {}).textContent || '',
         dest: (document.getElementById('DestFinal') || {}).textContent || '',
       }
-    }).catch(() => ({ code: '', success: false, text: '', plate: '', origin: '', dest: '' }))
+    }).catch(() => ({ code: '', receipt: false, text: '', plate: '', origin: '', dest: '' }))
 
     code = st.code || ''
-    if (st.success) finalSuccess = st
-    if (code || finalSuccess) break
+    if (st.receipt && !receiptSeenAt) {
+      receiptSeenAt = Date.now()
+      log('   ⓘ صفحه رسید دیده شد — چند لحظه صبر می‌کنیم تا مطمئن شویم OTP لازم نیست...')
+    }
+    if (st.receipt) finalSuccess = st
+
+    // ── ۳) تعیین نتیجه نهایی ──
+    if (code) break // کد رهگیری آمد → قطعا موفق
+
+    if (finalSuccess && !otpSeen && receiptSeenAt && Date.now() - receiptSeenAt > OTP_GRACE_MS) {
+      // رسید بود و در مهلتِ چند ثانیه‌ای هیچ OTP نیامد → موفق
+      break
+    }
+    if (finalSuccess && otpSeen && otpCompleted) break // OTP هم ثبت شد و رسید هم هست
+
     swalErr = await readSwalError(page)
     if (swalErr) break
     await page.waitForTimeout(500)
@@ -1980,6 +2117,16 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
   }
 
   if (finalSuccess) {
+    if (otpSeen && !otpCompleted) {
+      // رسید نمایش داده شد ولی OTP خواسته شد و کامل نشد → ناموفق
+      const detail = await readFinalStateDetail(page)
+      await page.screenshot({ path: path.join(OUT, `${tag}-otp-incomplete.png`), fullPage: true }).catch(() => {})
+      return {
+        success: false,
+        kind: 'otp_failed',
+        error: `صفحه رسید نمایش داده شد ولی کد یکبارمصرف کامل نشد. ${otpDetail || 'OTP لازم بود ولی ثبت نشد'} | وضعیت صفحه: ${detail}`,
+      }
+    }
     log('\n   🎉 بارنامه با موفقیت ثبت شد — صفحه «سند حمل صادر گردید» نمایش داده شد')
     const plate = String(finalSuccess.plate || '').trim()
     const origin = String(finalSuccess.origin || '').trim()
@@ -1988,6 +2135,16 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
     log('      کد رهگیری در فیلد TrackingCodeNumber خوانده نشد، اما رسید نهایی سایت تایید شد.')
     await page.screenshot({ path: path.join(OUT, `${tag}-receipt.png`), fullPage: true }).catch(() => {})
     return { success: true, trackingCode: '', finalReceipt: true }
+  }
+
+  if (otpSeen && !otpCompleted) {
+    const detail = await readFinalStateDetail(page)
+    await page.screenshot({ path: path.join(OUT, `${tag}-otp-incomplete.png`), fullPage: true }).catch(() => {})
+    return {
+      success: false,
+      kind: 'otp_failed',
+      error: `کد یکبارمصرف کامل نشد. ${otpDetail || 'OTP لازم بود ولی ثبت نشد'} | وضعیت صفحه: ${detail}`,
+    }
   }
 
   log('   ✖ نه کد رهگیری دریافت شد و نه صفحه رسید نهایی دیده شد:')
@@ -1999,6 +2156,8 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
     return Array.from(new Set(o)).slice(0, 8)
   }).catch(() => [])
   errs.forEach(e => log('      • ' + e))
+  const detailNow = await readFinalStateDetail(page)
+  if (detailNow) log(`      وضعیت: ${detailNow}`)
   await page.screenshot({ path: path.join(OUT, `${tag}-error.png`), fullPage: true }).catch(() => {})
   return false
 }
@@ -2361,10 +2520,8 @@ function cleanSiteErrorMessage(raw) {
 
 /**
  * چالش امنیتی WAF — صفحه‌ی «Security check» با کپچای تصویری.
- *
- * در اتوماسیون این صفحه حل نمی‌شود. اگر تصویر کپچای ورود پیدا نشود
- * (چون الان WAF است نه DNTCaptcha)، صفحه رفرش می‌شود و معمولاً
- * فرم لاگین برمی‌گردد. مرورگر بسته نمی‌شود.
+ * فعلا فقط تشخیص می‌دهیم (حلش پیاده نشده) تا لااقل صریح گزارش شود
+ * به‌جای اینکه به‌عنوان «فرم باز نشد» رد شود.
  */
 async function isWafChallenge(page) {
   return page.evaluate(() => {
@@ -2373,143 +2530,6 @@ async function isWafChallenge(page) {
     const hasField = !!document.querySelector('input[name="pcode"], input[name="vcode"], input[name="req_data"]')
     return hasText || hasField
   }).catch(() => false)
-}
-
-async function hasLoginForm(page) {
-  return page.evaluate(() => !!document.querySelector('#NationalCode, #user-password, #inter')).catch(() => false)
-}
-
-/** همان رفرش حلقه‌ی ورود اتوماسیون: reload + ۲٫۵ ثانیه + برداشتن لایه‌ی loading */
-async function reloadLoginPageLikeAutomation(page) {
-  await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
-  await page.waitForTimeout(2500)
-  await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
-}
-
-async function fillLoginFields(page, credentials) {
-  await (await page.$('#NationalCode'))?.fill(credentials.username)
-  await (await page.$('#user-password'))?.fill(credentials.password)
-}
-
-/**
- * اگر صفحه WAF است، دقیقاً همان کار اتوماسیون را می‌کند:
- * رفرش صفحه (بدون بستن مرورگر) تا فرم لاگین برگردد.
- */
-async function recoverWafByReload(page, label, max = 6) {
-  for (let i = 1; i <= max; i++) {
-    const waf = await isWafChallenge(page)
-    if (!waf) return true
-    console.log(`   ⚠ چالش WAF (${label}) — رفرش صفحه مثل اتوماسیون (${i}/${max})`)
-    await reloadLoginPageLikeAutomation(page)
-  }
-  if (await isWafChallenge(page)) {
-    console.log(`   ✖ چالش WAF بعد از ${max} رفرش هنوز هست`)
-    return false
-  }
-  return true
-}
-
-/**
- * ورود به سامانه — کپی بی‌کم‌وکاست حلقه‌ی ورود runWaybillOnce.
- * هم اتوماسیون و هم «دریافت اطلاعات» حساب‌های باربرگ از همین استفاده می‌کنند
- * تا WAF در هر دو مسیر یکسان رد شود (رفرش صفحه، نه بستن مرورگر).
- */
-async function loginToSite(page, credentials) {
-  if (!(await recoverWafByReload(page, 'قبل از ورود'))) {
-    return { ok: false, error: 'چالش امنیتی WAF بعد از رفرش برطرف نشد', kind: 'waf' }
-  }
-
-  await fillLoginFields(page, credentials)
-
-  let logged = false
-  let loginErr = 'ورود ناموفق'
-  let loginFatalKind = null
-  let failedWithGoodCaptcha = 0
-  for (let att = 1; att <= 6; att++) {
-    if (await isWafChallenge(page)) {
-      console.log(`   ⚠ چالش WAF هنگام ورود — رفرش (${att}/6)`)
-      await reloadLoginPageLikeAutomation(page)
-      await fillLoginFields(page, credentials)
-      continue
-    }
-
-    const t = await classifyTemplate(page)
-    if (t.error) {
-      console.log(`   ✖ کپچا: ${t.error} → رفرش`)
-      await reloadLoginPageLikeAutomation(page)
-      await fillLoginFields(page, credentials)
-      continue
-    }
-    const ans = solveMath(t.expr)
-    const minS = Math.min(...t.symbols.map(s => s.score))
-    console.log(`   ◈ کپچا: ${t.expr} ⇒ ${ans} (اطمینان ${(minS * 100).toFixed(0)}%)`)
-    if (ans === null || minS < 0.42) {
-      await (await page.$('#dntCaptchaRefreshButton'))?.click().catch(() => {})
-      await page.waitForTimeout(1500); continue
-    }
-    const ci = await page.$('#DNTCaptchaInputText')
-    await ci?.fill(''); await ci?.type(ans, { delay: 35 })
-    await page.waitForTimeout(300)
-    await (await page.$('#inter'))?.click()
-
-    const res = await waitLoginResult(page, 45000)
-    if (res.ok) {
-      logged = true
-      console.log(`   ✅ ورود موفق (${res.waited}s)` + (res.transient ? '  [با وجود خطای موقتی سایت]' : ''))
-      break
-    }
-    if (await isWafChallenge(page)) {
-      console.log(`   ⚠ بعد از کلیک ورود، چالش WAF آمد — رفرش (${att}/6)`)
-      await reloadLoginPageLikeAutomation(page)
-      await fillLoginFields(page, credentials)
-      continue
-    }
-    if (res.fatal) {
-      loginErr = res.error
-      if (res.credentialKind) {
-        loginFatalKind = res.credentialKind
-        console.log(`   🛑 ${res.error}`)
-        if (res.rawError) console.log(`      پیام سایت: «${res.rawError}»`)
-        console.log(`      حساب: ${credentials.username}`)
-      } else {
-        console.log(`   🛑 خطای قطعی: ${res.error}`)
-      }
-      break
-    }
-    loginErr = res.error || loginErr
-    console.log(`   ✖ ورود نشد (${res.waited}s)${res.error ? ' — ' + res.error.slice(0, 90) : ''}`)
-
-    if (!res.transient) failedWithGoodCaptcha++
-    if (failedWithGoodCaptcha >= 3) {
-      const stillLogin = await hasLoginForm(page)
-      if (stillLogin) {
-        loginFatalKind = 'bad_credentials'
-        loginErr = 'نام کاربری (کد ملی) یا رمز عبور حساب باربگ اشتباه است — ' +
-                   'از صفحه «حساب‌های باربگ» اصلاحش کنید'
-        console.log(`   🛑 ${loginErr}`)
-        console.log(`      پس از ${failedWithGoodCaptcha} تلاش با کپچای درست، هنوز روی صفحه‌ی ورودیم`)
-        console.log(`      حساب: ${credentials.username}`)
-        break
-      }
-    }
-
-    if (res.transient) {
-      console.log('   ↻ رفرش کامل صفحه (سایت خطای موقتی داشت)...')
-      await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
-      await page.waitForTimeout(3000)
-      await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
-    } else {
-      await (await page.$('#dntCaptchaRefreshButton'))?.click().catch(() => {})
-      await page.waitForTimeout(1200)
-    }
-    await fillLoginFields(page, credentials)
-  }
-
-  return {
-    ok: logged,
-    error: loginErr,
-    kind: logged ? 'ok' : (loginFatalKind || 'error'),
-  }
 }
 
 /**
@@ -2951,6 +2971,7 @@ async function runWaybillOnce(opts) {
   const {
     credentials, data, submit = false, headless = false,
     onLog = null, onStep = null, keepOpenMs = 0, closeBrowser = true,
+    keepOpenOnFinal = false,
   } = opts
 
   if (onLog) setLogSink(onLog)
@@ -3044,10 +3065,91 @@ async function runWaybillOnce(opts) {
     await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
   }
 
-  {
-    const loginRes = await loginToSite(page, credentials)
-    if (!loginRes.ok) return fail(loginRes.error, loginRes.kind)
+  await (await page.$('#NationalCode'))?.fill(credentials.username)
+  await (await page.$('#user-password'))?.fill(credentials.password)
+
+  let logged = false
+  let loginErr = 'ورود ناموفق'
+  let captchaAttempts = 0
+  let loginFatalKind = null   // 'bad_credentials' یا 'account_locked'
+  let failedWithGoodCaptcha = 0
+  for (let att = 1; att <= 6; att++) {
+    captchaAttempts = att
+    const t = await classifyTemplate(page)
+    if (t.error) {
+      console.log(`   ✖ کپچا: ${t.error} → رفرش`)
+      await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
+      await page.waitForTimeout(2500)
+      await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
+      await (await page.$('#NationalCode'))?.fill(credentials.username)
+      await (await page.$('#user-password'))?.fill(credentials.password)
+      continue
+    }
+    const ans = solveMath(t.expr)
+    const minS = Math.min(...t.symbols.map(s => s.score))
+    console.log(`   ◈ کپچا: ${t.expr} ⇒ ${ans} (اطمینان ${(minS * 100).toFixed(0)}%)`)
+    if (ans === null || minS < 0.42) {
+      await (await page.$('#dntCaptchaRefreshButton'))?.click().catch(() => {})
+      await page.waitForTimeout(1500); continue
+    }
+    const ci = await page.$('#DNTCaptchaInputText')
+    await ci?.fill(''); await ci?.type(ans, { delay: 35 })
+    await page.waitForTimeout(300)
+    await (await page.$('#inter'))?.click()
+
+    const res = await waitLoginResult(page, 45000)
+    if (res.ok) {
+      logged = true
+      console.log(`   ✅ ورود موفق (${res.waited}s)` + (res.transient ? '  [با وجود خطای موقتی سایت]' : ''))
+      break
+    }
+    if (res.fatal) {
+      loginErr = res.error
+      if (res.credentialKind) {
+        loginFatalKind = res.credentialKind
+        console.log(`   🛑 ${res.error}`)
+        if (res.rawError) console.log(`      پیام سایت: «${res.rawError}»`)
+        console.log(`      حساب: ${credentials.username}`)
+      } else {
+        console.log(`   🛑 خطای قطعی: ${res.error}`)
+      }
+      break
+    }
+    loginErr = res.error || loginErr
+    console.log(`   ✖ ورود نشد (${res.waited}s)${res.error ? ' — ' + res.error.slice(0, 90) : ''}`)
+
+    /* پاپ‌آپ ممکن است قبل از خواندن محو شده باشد. اگر سه بار پشت سر هم
+       با کپچای درست وارد نشدیم و هنوز روی صفحه‌ی ورودیم، تقریبا قطعی است
+       که مشخصات حساب اشتباه است — وگرنه ساعت‌ها بی‌فایده تلاش می‌کنیم
+       و ممکن است حساب در سامانه قفل شود. */
+    if (!res.transient) failedWithGoodCaptcha++
+    if (failedWithGoodCaptcha >= 3) {
+      const stillLogin = await page.evaluate(() =>
+        !!document.querySelector('#NationalCode, #user-password, #inter')).catch(() => false)
+      if (stillLogin) {
+        loginFatalKind = 'bad_credentials'
+        loginErr = 'نام کاربری (کد ملی) یا رمز عبور حساب باربگ اشتباه است — ' +
+                   'از صفحه «حساب‌های باربگ» اصلاحش کنید'
+        console.log(`   🛑 ${loginErr}`)
+        console.log(`      پس از ${failedWithGoodCaptcha} تلاش با کپچای درست، هنوز روی صفحه‌ی ورودیم`)
+        console.log(`      حساب: ${credentials.username}`)
+        break
+      }
+    }
+
+    if (res.transient) {
+      console.log('   ↻ رفرش کامل صفحه (سایت خطای موقتی داشت)...')
+      await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
+      await page.waitForTimeout(3000)
+      await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
+    } else {
+      await (await page.$('#dntCaptchaRefreshButton'))?.click().catch(() => {})
+      await page.waitForTimeout(1200)
+    }
+    await (await page.$('#NationalCode'))?.fill(credentials.username)
+    await (await page.$('#user-password'))?.fill(credentials.password)
   }
+  if (!logged) return fail(loginErr, loginFatalKind || 'error')
 
   console.log('\n→ باز کردن فرم بارنامه...')
   {
@@ -3067,21 +3169,7 @@ async function runWaybillOnce(opts) {
     }
   }
 
-  let hasForm = await page.$('#senderSelectType')
-  if (!hasForm && await isWafChallenge(page)) {
-    console.log('   ⚠ فرم نیامد — چالش WAF است؛ رفرش مثل حلقه‌ی ورود...')
-    if (await recoverWafByReload(page, 'فرم بارنامه')) {
-      if (await hasLoginForm(page) && !(await isLoggedInByUserMenu(page))) {
-        const again = await loginToSite(page, credentials)
-        if (!again.ok) return fail(again.error, again.kind)
-        const navAgain = await gotoR(page, TARGET_URL, 'فرم بارنامه')
-        if (navAgain === 'BLOCKED') return fail('IP بلاک شد هنگام باز کردن فرم بارنامه', 'block')
-        await page.waitForTimeout(2500)
-        await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
-      }
-      hasForm = await page.$('#senderSelectType')
-    }
-  }
+  const hasForm = await page.$('#senderSelectType')
   if (!hasForm) {
     // چرا فرم نیامد؟ بلاک؟ مشغول؟ WAF؟ پرت‌شدن به لاگین؟
     const h = await pageHealth(page)
@@ -3107,6 +3195,7 @@ async function runWaybillOnce(opts) {
   let capturedMapLocations = null
   let lastStep = 'فرستنده'
   let midFail = null          // اگر وسط گام‌ها اتصال قطع شد
+  let reachedFinal = false    // به گام آخر (ثبت نهایی) رسیدیم یا نه
 
   try {
   console.log('\n═══ ' + STEP_SENDER.label + ' ═══')
@@ -3202,6 +3291,7 @@ async function runWaybillOnce(opts) {
   if (!opts.captureMapLocations && ok8) {
     console.log('\n═══ گام ۹: تایید مشخصات و ثبت نهایی ═══')
     lastStep = 'ثبت نهایی'
+    reachedFinal = true
     const res = await finalConfirmStep(page, OUT, 'step9', { dryRun: !submit, getOtpCode: opts.getOtpCode })
     ok9 = !!res && (typeof res === 'object' ? res.success !== false : true)
     if (res && typeof res === 'object' && res.success === false) {
@@ -3266,6 +3356,7 @@ async function runWaybillOnce(opts) {
   }
 
   const success = opts.captureMapLocations ? !!(ok5 && ok6 && capturedMapLocations) : !!ok9
+  const keepOpen = !!(keepOpenOnFinal && reachedFinal)
   const result = {
     success,
     trackingCode,
@@ -3275,11 +3366,20 @@ async function runWaybillOnce(opts) {
     kind: success ? 'ok' : (midFail ? midFail.kind : 'error'),
     error: success ? null
          : (midFail ? midFail.error : (swalNow || `گام «${lastStep}» ناموفق بود`)),
-    page: closeBrowser ? null : page,
-    browser: closeBrowser ? null : browser,
+    keepOpen,
+    page: (closeBrowser && !keepOpen) ? null : page,
+    browser: (closeBrowser && !keepOpen) ? null : browser,
   }
 
-  if (closeBrowser) await browser.close().catch(() => {})
+  if (keepOpen) {
+    KEPT_BROWSER = browser
+    KEPT_PAGE = page
+    browser.on('disconnected', () => { releaseKeptBrowser() })
+    console.log('\n🖥 [موقت] مرورگر باز نگه داشته شد — نتیجه را در پنجره‌ی مرورگر ببینید.')
+    console.log('   برای بستن: پنجره را دستی ببندید، یا پرچم BARBARG_KEEP_OPEN_ON_FINAL را خاموش کنید.')
+  } else if (closeBrowser) {
+    await browser.close().catch(() => {})
+  }
   return result
 }
 
@@ -3322,6 +3422,18 @@ async function isSiteReallyBack() {
   }
 }
 
+/* 🖥 [موقت] باز نگه‌داشتن مرورگر بعد از گام آخر ───────────────────────
+   وقتی پرچم keepOpenOnFinal روشن باشد و اجرا به «گام آخر» (ثبت نهایی)
+   برسد، مرورگر بسته نمی‌شود و نتیجه (هرچه باشد) روی صفحه می‌ماند.
+   مرورگر اینجا نگه داشته می‌شود تا Garbage Collector آن را نبندد. */
+let KEPT_BROWSER = null
+let KEPT_PAGE = null
+function releaseKeptBrowser() { KEPT_BROWSER = null; KEPT_PAGE = null }
+function closeKeptBrowser() {
+  if (KEPT_BROWSER) KEPT_BROWSER.close().catch(() => {})
+  releaseKeptBrowser()
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    runWaybill — لایه‌ی مقاومت روی runWaybillOnce
 
@@ -3347,6 +3459,9 @@ async function runWaybill(opts) {
     onLog = null,
     shouldStop = null,     // تابع اختیاری: اگر true برگرداند، متوقف شو
   } = opts
+
+  /* اگر از اجرای قبلی مرورگری باز مانده (حالت موقت)، پیش از شروع جدید ببندش */
+  closeKeptBrowser()
 
   // این نوع خطاها یعنی «سایت/شبکه» — ارزش صبر کردن دارد
   const RETRY_LONG  = ['block', 'busy', 'waf', 'timeout']
@@ -3388,6 +3503,12 @@ async function runWaybill(opts) {
         steps: [], trackingCode: null,
       }
       console.log(`   ✖ خطای غیرمنتظره: ${msg}`)
+    }
+
+    /* 🖥 [موقت] اگر گام آخر اجرا شد، دیگر تلاش مجدد نکن و مرورگر را باز بگذار */
+    if (last && last.keepOpen) {
+      console.log(`   🖥 [موقت] گام آخر اجرا شد (نتیجه: ${last.success ? '✅ موفق' : '✖ ناموفق'}) — مرورگر باز می‌ماند`)
+      return last
     }
 
     if (last.success) {
@@ -3660,35 +3781,12 @@ function splitLocation(raw) {
   const t = String(raw || '').replace(/\s+/g, ' ').trim()
   if (!t) return { province: '', city: '', address: '' }
 
-  const dashParts = t.split(/\s*[-–—/|]\s*/).filter(Boolean)
-  if (dashParts.length >= 3) {
-    return { province: dashParts[0], city: dashParts[1], address: dashParts.slice(2).join('، ') }
+  const parts = t.split(/\s*[-–—/|،,]\s*/).filter(Boolean)
+  if (parts.length >= 3) {
+    return { province: parts[0], city: parts[1], address: parts.slice(2).join('، ') }
   }
-
-  const commaParts = t.split(/\s*[،,]\s*/).filter(Boolean)
-  if (commaParts.length >= 3) {
-    return { province: commaParts[0], city: commaParts[1], address: commaParts.slice(2).join('، ') }
-  }
-  if (commaParts.length === 2) return { province: commaParts[0], city: commaParts[1], address: '' }
-  if (dashParts.length === 2) return { province: dashParts[0], city: dashParts[1], address: '' }
+  if (parts.length === 2) return { province: parts[0], city: parts[1], address: '' }
   return { province: t, city: t, address: '' }
-}
-
-function pickText(...vals) {
-  for (const v of vals) {
-    const t = String(v || '').replace(/[\u200c\s]+/g, ' ').trim()
-    if (t) return t
-  }
-  return ''
-}
-
-function pickLocation(fromHist, fromDetail) {
-  const score = (x) => {
-    if (!x) return 0
-    return (x.province ? 2 : 0) + (x.city ? 2 : 0) + (x.address ? Math.min(8, Math.floor(String(x.address).length / 6)) : 0)
-  }
-  return score(fromHist) >= score(fromDetail) ? (fromHist || fromDetail || { province: '', city: '', address: '' })
-    : (fromDetail || fromHist || { province: '', city: '', address: '' })
 }
 
 /** «علي پرون» → { firstName:'علي', lastName:'پرون' } */
@@ -3776,21 +3874,10 @@ async function scrapeHistoryTable(page) {
       const td = Array.from(tr.querySelectorAll('td'))
       if (td.length < 12) continue
 
-      // آدرس کامل معمولاً در title / data-original-title است؛ متن سلول کوتاه شده
+      // آدرس کامل در title است، متن سلول کوتاه‌شده («کرمان، سیرج...»)
       const titleOf = (cell) => {
-        if (!cell) return ''
-        const attrs = [
-          cell.getAttribute('title'),
-          cell.getAttribute('data-original-title'),
-          cell.getAttribute('data-bs-original-title'),
-        ]
-        for (const a of attrs) if (a && a.trim()) return a.trim()
-        const el = cell.querySelector('[title], [data-original-title], [data-bs-original-title]')
-        if (el) {
-          const t = el.getAttribute('title') || el.getAttribute('data-original-title') || el.getAttribute('data-bs-original-title') || ''
-          if (t.trim()) return t.trim()
-        }
-        return clean(cell.textContent)
+        const el = cell.querySelector('[title]')
+        return el ? String(el.getAttribute('title') || '').trim() : clean(cell.textContent)
       }
 
       rows.push({
@@ -3842,10 +3929,10 @@ async function scrapeBarnameDetail(page) {
     const letter = sel('Part3')
 
     return {
-      trackingCode: val('trackingCode', 'TrackingCode', 'trackingcode'),
-      sender: val('sender', 'Sender', 'rqsSender'),
-      receiver: val('receiver', 'Receiver', 'rqsReceiver'),
-      driverName: val('driverName', 'DriverName', 'rqsDriver'),
+      trackingCode: val('trackingCode'),
+      sender: val('sender'),
+      receiver: val('receiver'),
+      driverName: val('driverName'),
       // نام کاربر از نوار بالا — منبع دوم و مطمئن‌تر
       headerUserName: (() => {
         const clean = (t) => String(t || '').replace(/[\u200c\s]+/g, ' ').trim()
@@ -3876,8 +3963,8 @@ async function scrapeBarnameDetail(page) {
 
       announceCost: val('announceCost'),
       insuranceCost: val('insuranceCost'),
-      origin: val('origin', 'Origin', 'rqsOrigin'),
-      destination: val('destination', 'Destination', 'rqsDestination'),
+      origin: val('origin'),
+      destination: val('destination'),
 
       selfDeclaredStart: val('SelfDeclaredTimeOfStartShipment'),
       estimatedEnd: val('EstimatedTimeOfEndShipment'),
@@ -3887,20 +3974,6 @@ async function scrapeBarnameDetail(page) {
       cargo,
     }
   }).catch(() => null)
-}
-
-/** جزئیات گاهی دیر با AJAX پر می‌شود؛ صبر می‌کنیم تا حداقل یک فیلد اصلی مقدار بگیرد. */
-async function waitForDetailFilled(page, timeoutMs = 20000) {
-  const t0 = Date.now()
-  let last = null
-  while (Date.now() - t0 < timeoutMs) {
-    last = await scrapeBarnameDetail(page)
-    if (last && (last.trackingCode || last.sender || last.origin || last.driverNationalCode || last.destination)) {
-      return last
-    }
-    await page.waitForTimeout(500)
-  }
-  return last
 }
 
 /**
@@ -3962,10 +4035,7 @@ async function importLastBarname(opts) {
     ? !!(await page.$(sel).then(async (el) => { if (!el) return false; await el.click().catch(() => {}); return true }).catch(() => false))
     : humanClick(page, sel)
 
-  const done = async (r) => {
-    try { if (browser && browser.isConnected()) await browser.close() } catch (e) {}
-    return r
-  }
+  const done = async (r) => { await browser.close().catch(() => {}); return r }
   const stopRequested = async () => {
     if (!shouldStop) return false
     try { return await shouldStop() } catch (e) { return false }
@@ -3994,9 +4064,52 @@ async function importLastBarname(opts) {
       return done({ success: false, error: 'سرور مشغول است: ' + m, kind: 'busy' })
     }
 
-    // ورود دقیقاً مثل تب اتوماسیون: اگر WAF آمد صفحه رفرش می‌شود تا فرم لاگین برگردد
-    const loginRes = await loginToSite(page, credentials)
-    if (!loginRes.ok) return done({ success: false, error: loginRes.error, kind: loginRes.kind })
+    await iType( '#NationalCode', credentials.username)
+    await iShort()
+    await iType( '#user-password', credentials.password)
+    await iShort()
+
+    // ── حل کپچا و ورود ──
+    let logged = false
+    let lastErr = 'ورود ناموفق'
+    let credKind = null
+
+    for (let att = 1; att <= 6; att++) {
+      const t = await classifyTemplate(page)
+      if (t.error) {
+        console.log(`   ✖ کپچا: ${t.error} → رفرش`)
+        await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
+        await iSettle()
+        await iType( '#NationalCode', credentials.username)
+        await iShort()
+        await iType( '#user-password', credentials.password)
+        continue
+      }
+      const ans = solveMath(t.expr)
+      const minS = Math.min(...t.symbols.map((x) => x.score))
+      console.log(`   ◈ کپچا: ${t.expr} ⇒ ${ans} (${(minS * 100).toFixed(0)}%)`)
+      if (ans === null || minS < 0.42) {
+        await iClick( '#dntCaptchaRefreshButton')
+        await iPause(1800, 3200)
+        continue
+      }
+      await iType( '#DNTCaptchaInputText', ans)
+      await iMedium()
+      await iClick( '#inter')
+
+      const res = await waitLoginResult(page, 45000)
+      if (res.ok) { logged = true; console.log(`   ✅ ورود موفق (${res.waited}s)`); break }
+      lastErr = res.error || lastErr
+      if (res.credentialKind) { credKind = res.credentialKind; console.log(`   🛑 ${res.error}`); break }
+      console.log(`   ✖ ورود نشد — ${String(res.error || '').slice(0, 80)}`)
+      await iPause(2000, 4000)
+      await iClick( '#dntCaptchaRefreshButton')
+      await iType( '#NationalCode', credentials.username)
+      await iShort()
+      await iType( '#user-password', credentials.password)
+    }
+
+    if (!logged) return done({ success: false, error: lastErr, kind: credKind || 'error' })
 
     /* نام دارنده‌ی حساب را همین‌جا از نوار بالا بردار —
        قبل از رفتن به تاریخچه، تا حتی اگر تاریخچه خالی بود هم داشته باشیمش. */
@@ -4016,42 +4129,11 @@ async function importLastBarname(opts) {
     if (!navHist) {
       return done({ success: false, error: 'صفحه‌ی تاریخچه باز نشد', kind: 'block' })
     }
-    await page.waitForTimeout(2500)
-    await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
-
-    if (await isWafChallenge(page)) {
-      console.log('   ⚠ تاریخچه باز نشد — چالش WAF است؛ رفرش مثل اتوماسیون...')
-      if (!(await recoverWafByReload(page, 'تاریخچه'))) {
-        return done({ success: false, error: 'چالش امنیتی WAF هنگام باز کردن تاریخچه', kind: 'waf' })
-      }
-      if (await hasLoginForm(page) && !(await isLoggedInByUserMenu(page))) {
-        console.log('   ↻ بعد از رفرش WAF به فرم ورود برگشتیم — ورود مجدد مثل اتوماسیون')
-        const again = await loginToSite(page, credentials)
-        if (!again.ok) return done({ success: false, error: again.error, kind: again.kind })
-        const navHist2 = await gotoR(page, HISTORY_URL, 'تاریخچه')
-        if (navHist2 === 'BLOCKED' || !navHist2) {
-          return done({ success: false, error: 'صفحه‌ی تاریخچه بعد از عبور از WAF باز نشد', kind: 'block' })
-        }
-        await page.waitForTimeout(2500)
-        await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
-      }
-    }
     await iSettle( 'صفحه‌ی تاریخچه')
 
     // دکمه‌ی «جزئیات» — ممکن است با AJAX دیر بیاید
     let hasBtn = false
     for (let i = 0; i < 30; i++) {
-      if (await isWafChallenge(page)) {
-        console.log('   ⚠ وسط انتظار تاریخچه دوباره WAF آمد — رفرش')
-        await recoverWafByReload(page, 'تاریخچه (انتظار دکمه)')
-        if (await hasLoginForm(page) && !(await isLoggedInByUserMenu(page))) {
-          const again = await loginToSite(page, credentials)
-          if (!again.ok) return done({ success: false, error: again.error, kind: again.kind })
-          await gotoR(page, HISTORY_URL, 'تاریخچه')
-          await page.waitForTimeout(2500)
-          await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
-        }
-      }
       hasBtn = await page.evaluate(() =>
         !!document.querySelector('#btnDetailfirst, button[name="btnDetailfirst"]')).catch(() => false)
       if (hasBtn) break
@@ -4059,9 +4141,6 @@ async function importLastBarname(opts) {
     }
 
     if (!hasBtn) {
-      if (await isWafChallenge(page)) {
-        return done({ success: false, error: 'چالش امنیتی WAF هنگام خواندن تاریخچه', kind: 'waf' })
-      }
       const sw = await readSwalError(page)
       await page.screenshot({ path: path.join(OUT, 'import-nohistory.png'), fullPage: true }).catch(() => {})
       return done({
@@ -4078,16 +4157,7 @@ async function importLastBarname(opts) {
        مقصد در ویژگی title سلول‌هاست — جایی که استان و شهر هم جدا آمده‌اند:
            «کرمان، سیرجان، خیابان ابن سینا-سیرجان-کرمان»
        صفحه‌ی جزئیات فقط متن فشرده دارد، پس جدول دقیق‌تر است. */
-    await iMedium()
-    for (let i = 0; i < 20; i++) {
-      const n = await page.evaluate(() => {
-        const tbl = document.querySelector('#myTable tbody') || document.querySelector('table.dataTable tbody')
-        return tbl ? tbl.querySelectorAll('tr').length : 0
-      }).catch(() => 0)
-      if (n > 0) break
-      await page.waitForTimeout(400)
-    }
-    await page.waitForTimeout(800)
+    await iMedium()   // فرصت به DataTables برای رندر کامل
     const historyRows = await scrapeHistoryTable(page)
     if (historyRows.length) {
       console.log(`   ✔ ${historyRows.length} بارنامه در جدول تاریخچه`)
@@ -4124,16 +4194,10 @@ async function importLastBarname(opts) {
 
     await iSettle( 'صفحه‌ی جزئیات')
     console.log(`   ✔ صفحه‌ی جزئیات باز شد: ${page.url()}`)
-    console.log('   ⏱ صبر تا فیلدهای جزئیات واقعاً پر شوند...')
 
-    let raw = await waitForDetailFilled(page, 20000)
-    if (!raw) raw = await scrapeBarnameDetail(page)
+    await iMedium()
+    const raw = await scrapeBarnameDetail(page)
     if (!raw) return done({ success: false, error: 'خواندن اطلاعات بارنامه ناموفق بود', kind: 'error' })
-    if (!raw.trackingCode && !raw.sender && !raw.origin) {
-      console.log('   ⚠ فیلدهای جزئیات هنوز خالی‌اند — یک بار دیگر می‌خوانم')
-      await page.waitForTimeout(2500)
-      raw = await scrapeBarnameDetail(page) || raw
-    }
 
     await page.screenshot({ path: path.join(OUT, 'import-detail.png'), fullPage: true }).catch(() => {})
     try {
@@ -4144,22 +4208,18 @@ async function importLastBarname(opts) {
     /* جدول تاریخچه اولویت دارد چون آدرس کامل و تفکیک‌شدهی
        استان/شهر را دارد؛ صفحه‌ی جزئیات فقط متن فشرده دارد. */
     const hist = historyRows[0] || null
-    const o = pickLocation(
-      hist && hist.originTitle ? parseHistoryLocation(hist.originTitle) : null,
-      splitLocation(raw.origin),
-    )
-    const d = pickLocation(
-      hist && hist.destTitle ? parseHistoryLocation(hist.destTitle) : null,
-      splitLocation(raw.destination),
-    )
-    const driverSource = pickText(headerName, raw.headerUserName, raw.driverName, hist && hist.driver)
-    const drv = splitPersonName(driverSource)
+    const o = hist && hist.originTitle ? parseHistoryLocation(hist.originTitle) : splitLocation(raw.origin)
+    const d = hist && hist.destTitle ? parseHistoryLocation(hist.destTitle) : splitLocation(raw.destination)
+    /* نام راننده: اول از نوار بالای سایت، بعد از فیلد #driverName.
+       نوار بالا مطمئن‌تر است چون همیشه و در هر صفحه‌ای حضور دارد. */
+    const driverSource = headerName || raw.headerUserName || raw.driverName
+    const drv = splitPersonName(driverSource || hist?.driver || '')
     if (headerName && raw.driverName && fold_(headerName) !== fold_(raw.driverName)) {
       console.log(`   ⚠ نام نوار بالا («${headerName}») با نام بارنامه («${raw.driverName}») یکی نیست`)
       console.log('      از نام نوار بالا استفاده شد — در صورت نیاز در پروفایل اصلاحش کن')
     }
-    const snd = splitPersonName(pickText(raw.sender, hist && hist.sender))
-    const rcv = splitPersonName(pickText(raw.receiver, hist && hist.receiver))
+    const snd = splitPersonName(raw.sender || hist?.sender || '')
+    const rcv = splitPersonName(raw.receiver || hist?.receiver || '')
     const c0 = raw.cargo[0] || {}
 
     const letter = raw.plate.letterText || PLATE_LETTER_BY_VALUE[raw.plate.letterValue] || ''
@@ -4171,10 +4231,9 @@ async function importLastBarname(opts) {
     // پلاک جدول به قالب «45|923-ع-17» است
     const histPlate = hist ? parsePlateFromHistory(hist.plateRaw) : null
     const plateText = (histPlate && histPlate.text) || detailPlate
-    const trackingCode = pickText(raw.trackingCode, hist && hist.trackingCode)
 
     const profile = {
-      name: `وارد‌شده از بارنامه ${trackingCode || ''}`.trim(),
+      name: `وارد‌شده از بارنامه ${raw.trackingCode || ''}`.trim(),
 
       senderFirstName: snd.firstName,
       senderLastName: snd.lastName,
@@ -4200,38 +4259,25 @@ async function importLastBarname(opts) {
       destCity: d.city,
       destAddress: d.address,
 
-      trackingCode,
+      trackingCode: raw.trackingCode || hist?.trackingCode || '',
+      // همه‌ی بارنامه‌های تاریخچه — برای گزارش و انتخاب کاربر
       historyCount: historyRows.length,
       shippingStart: raw.shippingStart || raw.selfDeclaredStart || '',
       shippingFinish: raw.shippingFinish || raw.estimatedEnd || '',
     }
 
     console.log('\n── اطلاعات استخراج‌شده ──')
-    console.log(`   کد رهگیری : ${profile.trackingCode || '—'}`)
-    console.log(`   فرستنده   : ${pickText(raw.sender, hist && hist.sender) || '—'}`)
-    console.log(`   گیرنده    : ${pickText(raw.receiver, hist && hist.receiver) || '—'}`)
+    console.log(`   کد رهگیری : ${raw.trackingCode || '—'}`)
+    console.log(`   فرستنده   : ${raw.sender || '—'}`)
+    console.log(`   گیرنده    : ${raw.receiver || '—'}`)
     console.log(`   راننده    : ${drv.full || '—'} | ${profile.driverNationalId || '—'}`)
     console.log(`   پلاک      : ${plateText || '—'}`)
     console.log(`   کالا      : ${profile.cargoName || '—'} | ${profile.cargoPackaging || '—'} | ` +
                 `${profile.cargoQuantity || '—'} بسته | ${profile.cargoWeight || '—'} تن`)
     console.log(`   ارزش      : ${profile.cargoValue || '—'}`)
-    console.log(`   مبدا      : ${[profile.originProvince, profile.originCity, profile.originAddress].filter(Boolean).join('، ') || '—'}`)
-    console.log(`   مقصد      : ${[profile.destProvince, profile.destCity, profile.destAddress].filter(Boolean).join('، ') || '—'}`)
+    console.log(`   مبدا      : ${raw.origin || '—'}`)
+    console.log(`   مقصد      : ${raw.destination || '—'}`)
     console.log(`   کالاها    : ${raw.cargo.length} ردیف`)
-
-    const incomplete = !profile.plateNumber || !profile.driverName
-      || (!profile.originCity && !profile.originProvince)
-      || (!profile.destCity && !profile.destProvince)
-      || !profile.cargoName
-    if (incomplete) {
-      console.log('   ✖ جزئیات ناقص است — پروفایل ساخته نمی‌شود، تلاش مجدد')
-      return done({
-        success: false,
-        error: 'جزئیات بارنامه ناقص خوانده شد (مبدا/مقصد یا پلاک خالی ماند)',
-        kind: 'error',
-        data: profile,
-      })
-    }
 
     return done({ success: true, data: profile, raw, history: historyRows })
   } catch (e) {
@@ -4444,10 +4490,11 @@ module.exports = {
   fillPersonStep, fillDriverVehicleStep, fillDriverVehicleStepWithRetries, fillCargoStep, fillLocationStep,
   captureLocationFromMapStep, applySavedMapLocationStep,
   passReviewStep, fillFareStep, finalConfirmStep,
-  pageHealth, isWafChallenge, recoverWafByReload, loginToSite, waitUntilSiteBack,
+  pageHealth, isWafChallenge, waitUntilSiteBack,
   isNetBlockError, isPageDeadError, isAccountRestrictedError, isServerTempError, isPermanentError,
   classifyCredentialError,
   isServerBusy, readBusyMessage, readSwalError, waitForSwalError, sleepWithLog,
+  closeKeptBrowser,
   STEP_SENDER, STEP_RECEIVER, STEP_ORIGIN, STEP_DEST,
   SITE, LOGIN_URL, TARGET_URL, OUT,
 }

@@ -1,0 +1,555 @@
+diff --git a/src/automation/engine/step1-engine.js b/src/automation/engine/step1-engine.js
+index 90f7d48..8c608b8 100644
+--- a/src/automation/engine/step1-engine.js
++++ b/src/automation/engine/step1-engine.js
+@@ -1783,25 +1783,52 @@ async function fillFareStep(page, fare, OUT, tag, verbose = true) {
+ 
+ 
+ /* ── OTP نهایی سایت، بعد از کلیک ثبت نهایی ── */
++
++/** شناسه‌های احتمالی مودال OTP — سایت گاهی شناسه/ساختار را عوض می‌کند */
++const OTP_MODAL_IDS = ['GetOptCodeModal', 'GetOtpCodeModal', 'OtpModal', 'otpModal', 'getOptCodeModal', 'SendOtpCodeModal']
++
+ async function isOtpModalVisible(page) {
+-  return page.evaluate(() => {
+-    const m = document.getElementById('GetOptCodeModal')
+-    if (!m) return false
+-    const st = window.getComputedStyle(m)
+-    return st.display !== 'none' && st.visibility !== 'hidden' && m.classList.contains('show')
+-  }).catch(() => false)
++  return page.evaluate((ids) => {
++    // ۱) مودال‌های شناخته‌شده
++    for (const id of ids) {
++      const m = document.getElementById(id)
++      if (!m) continue
++      const st = window.getComputedStyle(m)
++      if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') continue
++      const r = m.getBoundingClientRect()
++      if (r.width > 0 && r.height > 0) return true
++    }
++    // ۲) پشتیبان: هر باکس OTP نمایان (اگر ساختار مودال عوض شده باشد)
++    const boxes = Array.from(document.querySelectorAll('input.otp-box, input.otp-input, input.otp-code, input[data-otp]')).filter((b) => b.type !== 'hidden')
++    for (const b of boxes) {
++      const st = window.getComputedStyle(b)
++      if (st.display === 'none' || st.visibility === 'hidden') continue
++      const r = b.getBoundingClientRect()
++      if (r.width > 0 && r.height > 0) return true
++    }
++    return false
++  }, OTP_MODAL_IDS).catch(() => false)
+ }
+ 
++/**
++ * کد OTP را در باکس‌های مودال می‌ریزد و دکمه ثبت را می‌زند.
++ * خروجی: { ok, reason?, boxes? }
++ */
+ async function fillFinalOtpModal(page, code, verbose = true) {
+   const log = (m) => { if (verbose) console.log(m) }
+   const otp = String(code || '').replace(/\D/g, '').slice(0, 6)
+-  if (otp.length !== 6) return false
+-
+-  const ok = await page.evaluate((otp) => {
+-    const modal = document.getElementById('GetOptCodeModal')
+-    if (!modal) return false
+-    const boxes = Array.from(modal.querySelectorAll('input.otp-box'))
+-    if (boxes.length < 6) return false
++  if (otp.length !== 6) return { ok: false, reason: 'کد ۶ رقمی نیست' }
++
++  const filled = await page.evaluate((otp) => {
++    const modal = OTP_MODAL_IDS.map((id) => document.getElementById(id)).find(Boolean)
++    const scope = modal || document
++    let boxes = Array.from(scope.querySelectorAll('input.otp-box, input.otp-input, input.otp-code, input[data-otp]')).filter((el) => el.type !== 'hidden' && el.id !== 'otp')
++    if (!boxes.length) {
++      // پشتیبان: ورودی‌های عددی تک‌کاراکتری
++      boxes = Array.from(scope.querySelectorAll('input[inputmode="numeric"][maxlength="1"], input[maxlength="1"][type="tel"], input[maxlength="1"][type="text"]')).slice(0, 6)
++    }
++    if (boxes.length < 6) return { ok: false, reason: `فقط ${boxes.length} باکس OTP پیدا شد` }
++    boxes = boxes.slice(0, 6)
+     for (let i = 0; i < 6; i++) {
+       const el = boxes[i]
+       el.value = otp[i]
+@@ -1809,47 +1836,103 @@ async function fillFinalOtpModal(page, code, verbose = true) {
+       el.dispatchEvent(new Event('change', { bubbles: true }))
+       el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: otp[i] }))
+     }
+-    const hidden = document.getElementById('otp') || modal.querySelector('input[name="otp"]')
++    const hidden = document.getElementById('otp') || (modal && modal.querySelector('input[name="otp"]'))
+     if (hidden) {
+       hidden.value = otp
+       hidden.dispatchEvent(new Event('input', { bubbles: true }))
+       hidden.dispatchEvent(new Event('change', { bubbles: true }))
+     }
+-    return true
+-  }, otp).catch(() => false)
++    return { ok: true, boxes: boxes.length }
++  }, otp).catch(() => ({ ok: false, reason: 'خطا در پر کردن باکس‌های OTP' }))
++
++  if (!filled.ok) return filled
++  log(`   ✔ کد پیامکی ${otp} در ${filled.boxes} باکس OTP وارد شد`)
+ 
+-  if (!ok) return false
+-  log(`   ✔ کد پیامکی ${otp} در پنجره OTP وارد شد`)
+   await page.waitForTimeout(300)
+-  await page.click('#submitOtp').catch(async () => {
+-    await page.evaluate(() => document.getElementById('submitOtp')?.click()).catch(() => {})
+-  })
++  const clicked = await page.evaluate(() => {
++    const b = document.getElementById('submitOtp')
++    if (!b) return false
++    b.click()
++    return true
++  }).catch(() => false)
++  if (!clicked) return { ok: false, reason: 'دکمه ثبت OTP (#submitOtp) پیدا نشد', boxes: filled.boxes }
+   log('   ➜ دکمه ثبت OTP کلیک شد')
+-  await page.waitForTimeout(1500)
+-  return true
++  return { ok: true, boxes: filled.boxes }
+ }
+ 
++/**
++ * منتظر کد پیامکی می‌ماند، در مودال می‌ریزد، ثبت می‌کند و **تایید می‌کند
++ * که مودال واقعا بسته شده**. خروجی: { ok, reason?, codeReceived?, code? }
++ */
+ async function waitAndSubmitFinalOtp(page, getOtpCode, timeoutMs = 60_000, verbose = true) {
+   const log = (m) => { if (verbose) console.log(m) }
+   if (typeof getOtpCode !== 'function') {
+     log('   ✖ پنجره OTP باز شد ولی منبع دریافت کد پیامکی تعریف نشده است')
+-    return false
++    return { ok: false, reason: 'منبع دریافت کد پیامکی تعریف نشده است', codeReceived: false }
+   }
+ 
+   const started = Date.now()
+-  log('   🔐 پنجره کد پیامکی نمایش داده شد؛ تا ۱ دقیقه منتظر پیامک همان حساب می‌مانم...')
++  log(`   🔐 پنجره کد پیامکی نمایش داده شد؛ تا ${Math.round(timeoutMs / 1000)} ثانیه منتظر پیامک همان حساب می‌مانم...`)
+   let lastCode = ''
+   while (Date.now() - started < timeoutMs) {
+     let code = ''
+     try { code = String(await getOtpCode() || '').replace(/\D/g, '').slice(0, 6) } catch (e) { code = '' }
+     if (code && code !== lastCode) {
+       lastCode = code
+-      if (code.length === 6) return fillFinalOtpModal(page, code, verbose)
++      if (code.length === 6) {
++        log(`   📩 کد پیامکی دریافت شد: ${code}`)
++        const r = await fillFinalOtpModal(page, code, verbose)
++        if (!r.ok) return { ok: false, reason: r.reason, codeReceived: true, code }
++
++        // تایید: صبر کن ببینیم مودال بسته می‌شود و خطایی نمی‌آید
++        let closed = false
++        for (let k = 0; k < 24; k++) {
++          await page.waitForTimeout(500)
++          const sw = await readSwalError(page)
++          if (sw) {
++            log(`   ✖ خطای سایت پس از ثبت OTP: ${sw}`)
++            return { ok: false, reason: `خطای سایت پس از ثبت OTP: ${sw}`, codeReceived: true, code }
++          }
++          if (!(await isOtpModalVisible(page))) { closed = true; break }
++        }
++        if (closed) {
++          log('   ✔ پنجره OTP بسته شد')
++          return { ok: true, codeReceived: true, code }
++        }
++        log('   ⚠ پنجره OTP هنوز باز است — کد پذیرفته نشد')
++        return { ok: false, reason: 'کد وارد شد ولی پنجره OTP بسته نشد (کد اشتباه یا خطای سرور)', codeReceived: true, code }
++      }
+     }
+     await page.waitForTimeout(3000)
+   }
+-  log('   ✖ در مهلت ۱ دقیقه‌ای، کد پیامکی مربوط به این حساب دریافت نشد')
+-  return false
++  log(`   ✖ در مهلت ${Math.round(timeoutMs / 1000)} ثانیه‌ای، کد پیامکی مربوط به این حساب دریافت نشد`)
++  return { ok: false, reason: `در مهلت ${Math.round(timeoutMs / 1000)} ثانیه‌ای کد پیامکی دریافت نشد`, codeReceived: false }
++}
++
++/** وضعیت فعلی صفحه در گام آخر — برای گزارش جزئیات ناموفق */
++async function readFinalStateDetail(page) {
++  return page.evaluate(() => {
++    const g = (id) => {
++      const el = document.getElementById(id)
++      return el ? String((el.value ?? el.textContent) || '').trim() : ''
++    }
++    const otpOpen = (() => {
++      const m = document.getElementById('GetOptCodeModal') || document.getElementById('GetOtpCodeModal') || document.getElementById('OtpModal')
++      if (!m) return false
++      const st = window.getComputedStyle(m)
++      return st.display !== 'none' && st.visibility !== 'hidden'
++    })()
++    const swal = (() => {
++      const p = document.querySelector('.swal2-popup.swal2-icon-error')
++      return p && p.offsetParent !== null ? (document.getElementById('swal2-html-container')?.textContent || '').trim() : ''
++    })()
++    return [
++      `کد رهگیری: «${g('TrackingCodeNumber') || 'خالی'}»`,
++      `صفحه رسید: ${document.getElementById('trackingcode') ? 'هست' : 'نیست'}`,
++      `پنجره OTP: ${otpOpen ? 'باز' : 'بسته'}`,
++      swal ? `پاپ‌آپ خطا: «${swal}»` : '',
++    ].filter(Boolean).join(' | ')
++  }).catch(() => 'قابل خواندن نبود')
+ }
+ 
+ /* ═══════════ گام ۹: تایید + کپچا + ثبت نهایی ═══════════ */
+@@ -1907,26 +1990,67 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
+   let code = ''
+   let swalErr = ''
+   let finalSuccess = null
+-  let otpHandled = false
+-  for (let i = 0; i < 90; i++) {
+-    if (!otpHandled && await isOtpModalVisible(page)) {
+-      otpHandled = true
+-      const okOtp = await waitAndSubmitFinalOtp(page, getOtpCode, 60_000, verbose)
+-      if (!okOtp) {
++  let otpSeen = false        // آیا در این گام اصلا مودال OTP دیده شد؟
++  let otpCompleted = false   // آیا OTP با موفقیت ثبت و مودالش بسته شد؟
++  let otpAttempts = 0        // چند بار تلاش کردیم OTP را کامل کنیم
++  let otpDetail = ''         // جزئیات آخرین تلاش OTP (برای گزارش)
++  const MAX_OTP_ATTEMPTS = 2 // بعد از ۲ تلاش ناکام → ناموفق (otp_failed)
++  const OTP_GRACE_MS = 6000  // بعد از دیدن رسید، چند لحظه برای ظهور OTP صبر کن
++  let receiptSeenAt = 0
++
++  for (let i = 0; i < 120; i++) {
++    // ── ۱) همیشه اول چک کن: مودال OTP باز است؟ ──
++    //      سایت بعضی وقتا کد می‌خواهد بعضی وقتا نه؛ پس در هر تکرار بپاییم.
++    if (await isOtpModalVisible(page)) {
++      otpSeen = true
++      if (otpAttempts >= MAX_OTP_ATTEMPTS) {
++        const detail = await readFinalStateDetail(page)
+         await page.screenshot({ path: path.join(OUT, `${tag}-otp-failed.png`), fullPage: true }).catch(() => {})
+         return {
+           success: false,
+           kind: 'otp_failed',
+-          error: 'کد یکبارمصرف پیامکی دریافت نشد یا در پنجره OTP ثبت نشد',
++          error: `کد یکبارمصرف پیامکی پس از ${MAX_OTP_ATTEMPTS} تلاش کامل نشد. ${otpDetail} | وضعیت صفحه: ${detail}`,
+         }
+       }
++      otpAttempts++
++      log(`   🔐 پنجره کد یکبارمصرف باز است — تلاش ${otpAttempts}/${MAX_OTP_ATTEMPTS}`)
++      const r = await waitAndSubmitFinalOtp(page, getOtpCode, 60_000, verbose)
++      if (r.ok) {
++        otpCompleted = true
++        otpDetail = `OTP در تلاش ${otpAttempts} با موفقیت ثبت و پنجره بسته شد`
++        log(`   ✔ ${otpDetail}`)
++        // بعد از OTP، منتظر کد رهگیری/رسید می‌مانیم — حلقه ادامه دارد
++        continue
++      }
++      otpDetail = `تلاش ${otpAttempts}/${MAX_OTP_ATTEMPTS} ناموفق: ${r.reason}${r.codeReceived ? ' (کد پیامکی دریافت شد ولی ثبت نشد)' : ' (کد پیامکی دریافت نشد)'}`
++      log(`   ✖ ${otpDetail}`)
++      await page.screenshot({ path: path.join(OUT, `${tag}-otp-failed-${otpAttempts}.png`), fullPage: true }).catch(() => {})
++
++      if (otpAttempts >= MAX_OTP_ATTEMPTS) {
++        const detail = await readFinalStateDetail(page)
++        return {
++          success: false,
++          kind: 'otp_failed',
++          error: `کد یکبارمصرف پیامکی پس از ${MAX_OTP_ATTEMPTS} تلاش کامل نشد. ${otpDetail} | وضعیت صفحه: ${detail}`,
++        }
++      }
++      // تلاش بعدی: مودال را ببند (اگر باز مانده) و دوباره درخواست ثبت نهایی بزن
++      await page.evaluate(() => {
++        const b = document.querySelector('#GetOptCodeModal .close, #GetOptCodeModal [data-bs-dismiss="modal"], .swal2-popup .swal2-confirm')
++        if (b) b.click()
++      }).catch(() => {})
++      await page.waitForTimeout(1500)
++      await page.click('#btnRegisterFinished').catch(() => {})
++      await page.waitForTimeout(2500)
++      continue
+     }
+ 
++    // ── ۲) وضعیت رسید / کد رهگیری ──
+     const st = await page.evaluate(() => {
+       const code = (document.getElementById('TrackingCodeNumber') || {}).value || ''
+       const box = document.getElementById('trackingcode')
+       const text = (box ? box.innerText : document.body.innerText || '').replace(/\s+/g, ' ').trim()
+-      const success = !!(
++      const receipt = !!(
+         box &&
+         /سند حمل بار/.test(text) &&
+         /صادر گردید/.test(text) &&
+@@ -1936,17 +2060,30 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
+       )
+       return {
+         code: String(code || '').trim(),
+-        success,
+-        text: success ? text.slice(0, 500) : '',
++        receipt,
++        text: receipt ? text.slice(0, 500) : '',
+         plate: (document.getElementById('pelakFinal') || {}).textContent || '',
+         origin: (document.getElementById('OrginFinal') || {}).textContent || '',
+         dest: (document.getElementById('DestFinal') || {}).textContent || '',
+       }
+-    }).catch(() => ({ code: '', success: false, text: '', plate: '', origin: '', dest: '' }))
++    }).catch(() => ({ code: '', receipt: false, text: '', plate: '', origin: '', dest: '' }))
+ 
+     code = st.code || ''
+-    if (st.success) finalSuccess = st
+-    if (code || finalSuccess) break
++    if (st.receipt && !receiptSeenAt) {
++      receiptSeenAt = Date.now()
++      log('   ⓘ صفحه رسید دیده شد — چند لحظه صبر می‌کنیم تا مطمئن شویم OTP لازم نیست...')
++    }
++    if (st.receipt) finalSuccess = st
++
++    // ── ۳) تعیین نتیجه نهایی ──
++    if (code) break // کد رهگیری آمد → قطعا موفق
++
++    if (finalSuccess && !otpSeen && receiptSeenAt && Date.now() - receiptSeenAt > OTP_GRACE_MS) {
++      // رسید بود و در مهلتِ چند ثانیه‌ای هیچ OTP نیامد → موفق
++      break
++    }
++    if (finalSuccess && otpSeen && otpCompleted) break // OTP هم ثبت شد و رسید هم هست
++
+     swalErr = await readSwalError(page)
+     if (swalErr) break
+     await page.waitForTimeout(500)
+@@ -1980,6 +2117,16 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
+   }
+ 
+   if (finalSuccess) {
++    if (otpSeen && !otpCompleted) {
++      // رسید نمایش داده شد ولی OTP خواسته شد و کامل نشد → ناموفق
++      const detail = await readFinalStateDetail(page)
++      await page.screenshot({ path: path.join(OUT, `${tag}-otp-incomplete.png`), fullPage: true }).catch(() => {})
++      return {
++        success: false,
++        kind: 'otp_failed',
++        error: `صفحه رسید نمایش داده شد ولی کد یکبارمصرف کامل نشد. ${otpDetail || 'OTP لازم بود ولی ثبت نشد'} | وضعیت صفحه: ${detail}`,
++      }
++    }
+     log('\n   🎉 بارنامه با موفقیت ثبت شد — صفحه «سند حمل صادر گردید» نمایش داده شد')
+     const plate = String(finalSuccess.plate || '').trim()
+     const origin = String(finalSuccess.origin || '').trim()
+@@ -1990,6 +2137,16 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
+     return { success: true, trackingCode: '', finalReceipt: true }
+   }
+ 
++  if (otpSeen && !otpCompleted) {
++    const detail = await readFinalStateDetail(page)
++    await page.screenshot({ path: path.join(OUT, `${tag}-otp-incomplete.png`), fullPage: true }).catch(() => {})
++    return {
++      success: false,
++      kind: 'otp_failed',
++      error: `کد یکبارمصرف کامل نشد. ${otpDetail || 'OTP لازم بود ولی ثبت نشد'} | وضعیت صفحه: ${detail}`,
++    }
++  }
++
+   log('   ✖ نه کد رهگیری دریافت شد و نه صفحه رسید نهایی دیده شد:')
+   const errs = await page.evaluate(() => {
+     const o = []
+@@ -1999,6 +2156,8 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
+     return Array.from(new Set(o)).slice(0, 8)
+   }).catch(() => [])
+   errs.forEach(e => log('      • ' + e))
++  const detailNow = await readFinalStateDetail(page)
++  if (detailNow) log(`      وضعیت: ${detailNow}`)
+   await page.screenshot({ path: path.join(OUT, `${tag}-error.png`), fullPage: true }).catch(() => {})
+   return false
+ }
+@@ -2812,6 +2971,7 @@ async function runWaybillOnce(opts) {
+   const {
+     credentials, data, submit = false, headless = false,
+     onLog = null, onStep = null, keepOpenMs = 0, closeBrowser = true,
++    keepOpenOnFinal = false,
+   } = opts
+ 
+   if (onLog) setLogSink(onLog)
+@@ -3035,6 +3195,7 @@ async function runWaybillOnce(opts) {
+   let capturedMapLocations = null
+   let lastStep = 'فرستنده'
+   let midFail = null          // اگر وسط گام‌ها اتصال قطع شد
++  let reachedFinal = false    // به گام آخر (ثبت نهایی) رسیدیم یا نه
+ 
+   try {
+   console.log('\n═══ ' + STEP_SENDER.label + ' ═══')
+@@ -3130,6 +3291,7 @@ async function runWaybillOnce(opts) {
+   if (!opts.captureMapLocations && ok8) {
+     console.log('\n═══ گام ۹: تایید مشخصات و ثبت نهایی ═══')
+     lastStep = 'ثبت نهایی'
++    reachedFinal = true
+     const res = await finalConfirmStep(page, OUT, 'step9', { dryRun: !submit, getOtpCode: opts.getOtpCode })
+     ok9 = !!res && (typeof res === 'object' ? res.success !== false : true)
+     if (res && typeof res === 'object' && res.success === false) {
+@@ -3194,6 +3356,7 @@ async function runWaybillOnce(opts) {
+   }
+ 
+   const success = opts.captureMapLocations ? !!(ok5 && ok6 && capturedMapLocations) : !!ok9
++  const keepOpen = !!(keepOpenOnFinal && reachedFinal)
+   const result = {
+     success,
+     trackingCode,
+@@ -3203,11 +3366,20 @@ async function runWaybillOnce(opts) {
+     kind: success ? 'ok' : (midFail ? midFail.kind : 'error'),
+     error: success ? null
+          : (midFail ? midFail.error : (swalNow || `گام «${lastStep}» ناموفق بود`)),
+-    page: closeBrowser ? null : page,
+-    browser: closeBrowser ? null : browser,
++    keepOpen,
++    page: (closeBrowser && !keepOpen) ? null : page,
++    browser: (closeBrowser && !keepOpen) ? null : browser,
+   }
+ 
+-  if (closeBrowser) await browser.close().catch(() => {})
++  if (keepOpen) {
++    KEPT_BROWSER = browser
++    KEPT_PAGE = page
++    browser.on('disconnected', () => { releaseKeptBrowser() })
++    console.log('\n🖥 [موقت] مرورگر باز نگه داشته شد — نتیجه را در پنجره‌ی مرورگر ببینید.')
++    console.log('   برای بستن: پنجره را دستی ببندید، یا پرچم BARBARG_KEEP_OPEN_ON_FINAL را خاموش کنید.')
++  } else if (closeBrowser) {
++    await browser.close().catch(() => {})
++  }
+   return result
+ }
+ 
+@@ -3250,6 +3422,18 @@ async function isSiteReallyBack() {
+   }
+ }
+ 
++/* 🖥 [موقت] باز نگه‌داشتن مرورگر بعد از گام آخر ───────────────────────
++   وقتی پرچم keepOpenOnFinal روشن باشد و اجرا به «گام آخر» (ثبت نهایی)
++   برسد، مرورگر بسته نمی‌شود و نتیجه (هرچه باشد) روی صفحه می‌ماند.
++   مرورگر اینجا نگه داشته می‌شود تا Garbage Collector آن را نبندد. */
++let KEPT_BROWSER = null
++let KEPT_PAGE = null
++function releaseKeptBrowser() { KEPT_BROWSER = null; KEPT_PAGE = null }
++function closeKeptBrowser() {
++  if (KEPT_BROWSER) KEPT_BROWSER.close().catch(() => {})
++  releaseKeptBrowser()
++}
++
+ /* ═══════════════════════════════════════════════════════════════════
+    runWaybill — لایه‌ی مقاومت روی runWaybillOnce
+ 
+@@ -3276,6 +3460,9 @@ async function runWaybill(opts) {
+     shouldStop = null,     // تابع اختیاری: اگر true برگرداند، متوقف شو
+   } = opts
+ 
++  /* اگر از اجرای قبلی مرورگری باز مانده (حالت موقت)، پیش از شروع جدید ببندش */
++  closeKeptBrowser()
++
+   // این نوع خطاها یعنی «سایت/شبکه» — ارزش صبر کردن دارد
+   const RETRY_LONG  = ['block', 'busy', 'waf', 'timeout']
+   const RETRY_SHORT = ['dead', 'login', 'driver_plate_not_found', 'otp_failed']
+@@ -3318,6 +3505,12 @@ async function runWaybill(opts) {
+       console.log(`   ✖ خطای غیرمنتظره: ${msg}`)
+     }
+ 
++    /* 🖥 [موقت] اگر گام آخر اجرا شد، دیگر تلاش مجدد نکن و مرورگر را باز بگذار */
++    if (last && last.keepOpen) {
++      console.log(`   🖥 [موقت] گام آخر اجرا شد (نتیجه: ${last.success ? '✅ موفق' : '✖ ناموفق'}) — مرورگر باز می‌ماند`)
++      return last
++    }
++
+     if (last.success) {
+       if (attempt > 1) console.log(`   ✅ در تلاش ${attempt} موفق شد`)
+       return last
+@@ -4301,6 +4494,7 @@ module.exports = {
+   isNetBlockError, isPageDeadError, isAccountRestrictedError, isServerTempError, isPermanentError,
+   classifyCredentialError,
+   isServerBusy, readBusyMessage, readSwalError, waitForSwalError, sleepWithLog,
++  closeKeptBrowser,
+   STEP_SENDER, STEP_RECEIVER, STEP_ORIGIN, STEP_DEST,
+   SITE, LOGIN_URL, TARGET_URL, OUT,
+ }
+diff --git a/worker/processor.ts b/worker/processor.ts
+index ccbbdbd..8233117 100644
+--- a/worker/processor.ts
++++ b/worker/processor.ts
+@@ -46,6 +46,12 @@ const DO_SUBMIT = process.env.BARBARG_SUBMIT !== 'false'   // پیش‌فرض: 
+ /** مرورگر دیده شود یا نه (مثل تستر پیش‌فرض دیده می‌شود) */
+ const HEADLESS = process.env.BARBARG_HEADLESS === 'true'
+ 
++/** 🖥 [موقت] فقط در «قسمت اتوماسیون» (ورکر): بعد از رسیدن به گام آخر،
++    مرورگر را باز نگه دار — هر نتیجه‌ای که بود (موفق یا ناموفق).
++    پیش‌فرض روشن است. برای خاموش‌کردن موقت: BARBARG_KEEP_OPEN_ON_FINAL=false
++    برای حذف کامل این قابلیت: همین بلاک و خط `keepOpenOnFinal:` پایین را بردارید. */
++const KEEP_OPEN_ON_FINAL = process.env.BARBARG_KEEP_OPEN_ON_FINAL !== 'false'
++
+ /** خطاهایی که تکرارشان بی‌فایده است */
+ const PERMANENT = /مختصات انتخابی نامعتبر|کد ملی|کدملی|شناسه ملی|اعتبار کافی|موجودی|تکراری|مجوز|دسترسی ندارید|رمز|کلمه عبور|کاربری یافت نشد|قفل|مسدود|غیرفعال|صدور غیر مجاز بارنامه شهری|محدودیت در صدور بارنامه شهری|لیست سیاه سامانه|لیست سیاه/
+ 
+@@ -134,10 +140,11 @@ async function notify(title: string, message: string, type: 'info' | 'success' |
+ }
+ 
+ function createOtpCodeProvider(accountId: string, listenAfter: Date, taskId: string) {
+-  let cachedCode = ''
+-  let cachedSmsId = ''
++  /* پیامک‌هایی که قبلاً خوانده و «استفاده‌شده» شده‌اند را دنبال می‌کنیم تا
++     در تلاش بعدی همان کد قدیمی برنگردد و در عوض پیامک جدیدتر خوانده شود.
++     (قبلا کد یک بار کش می‌شد و تلاش دوم همیشه همان کد قبلی را می‌گرفت.) */
++  const usedSmsIds = new Set<string>()
+   return async () => {
+-    if (cachedCode) return cachedCode
+     const smsList = await prisma.smsMessage.findMany({
+       where: {
+         accountId,
+@@ -149,16 +156,16 @@ function createOtpCodeProvider(accountId: string, listenAfter: Date, taskId: str
+     }).catch(() => [])
+ 
+     for (const sms of smsList) {
++      if (usedSmsIds.has(sms.id)) continue
+       const code = extractSmsCode(`${sms.rawText || ''} ${sms.resultMessage || ''}`)
+       if (!code) continue
+-      cachedCode = code
+-      cachedSmsId = sms.id
++      usedSmsIds.add(sms.id)
+       await prisma.smsMessage.update({
+         where: { id: sms.id },
+         data: { status: 'used', usedAt: new Date(), resultMessage: `کد ورود برای ثبت نهایی استفاده شد: ${code}` },
+       }).catch(() => {})
+-      await log(taskId, 'success', `کد پیامکی مربوط به حساب دریافت شد و برای OTP نهایی استفاده می‌شود: ${code}`)
+-      return cachedCode
++      await log(taskId, 'success', `کد پیامکی جدید دریافت شد و برای OTP نهایی استفاده می‌شود: ${code}`)
++      return code
+     }
+     return ''
+   }
+@@ -275,6 +282,7 @@ export async function processWaybillJob(taskId: string): Promise<void> {
+       submit: DO_SUBMIT,
+       headless: HEADLESS,
+       maxRestarts: MAX_RESTARTS,
++      keepOpenOnFinal: KEEP_OPEN_ON_FINAL,
+       getOtpCode,
+       onLog: (line: string) => {
+         const clean = String(line).replace(/^\s*\n/, '').trim()
+@@ -418,26 +426,33 @@ export async function processWaybillJob(taskId: string): Promise<void> {
+        dead / login → مشکل محلی است، تکرار منطقی است */
+     const engineExhausted = ['block', 'waf'].includes(kind)
+ 
++    /* ─── کد یکبارمصرف (OTP) ───
++       از قیف «غیرفعال‌سازی حساب» جدا شد: نرسیدن یا ثبت‌نشدن کد پیامکی
++       لزوماً مشکل حساب نیست (ممکن است پیامک دیر برسد یا اپراتور مشکل
++       داشته باشد). فقط همین وظیفه ناموفق می‌شود و جزئیات ثبت می‌گردد. */
++    if (kind === 'otp_failed') {
++      await log(taskId, 'error', errMsg)
++      await log(taskId, 'warn', 'کد یکبارمصرف کامل نشد — وظیفه ناموفق ثبت شد ولی حساب غیرفعال نشد (ممکن است پیامک دیر رسیده باشد)')
++      await notify('کد یکبارمصرف حساب باربگ ثبت نشد', `پلاک ${profile.plateNumber}: ${errMsg}`, 'warning')
++      await prisma.job.update({ where: { id: taskId }, data: { status: 'failed', error: errMsg, completedAt: new Date() } })
++      await createErrorLog(taskId, errMsg)
++      return
++    }
++
+     /* ─── خطاهای قطعی مربوط به خود حساب باربگ ───
+        این خطاها با تکرار حل نمی‌شوند. علاوه بر متوقف کردن این وظیفه:
+          ۱) حساب غیرفعال می‌شود تا بقیه‌ی وظایف هم بی‌خود تلاش نکنند
+          ۲) وظایف در انتظار همین حساب لغو می‌شوند
+          ۳) اعلان ساخته می‌شود تا کاربر فورا بفهمد
+        نمونه‌ها: رمز اشتباه، حساب قفل/مسدود، محدودیت موقت صدور بارنامه شهری. */
+-    if (kind === 'bad_credentials' || kind === 'account_locked' || kind === 'account_restricted' || kind === 'otp_failed') {
++    if (kind === 'bad_credentials' || kind === 'account_locked' || kind === 'account_restricted') {
+       const isLocked = kind === 'account_locked'
+       const isRestricted = kind === 'account_restricted'
+-      const isOtpFailed = kind === 'otp_failed'
+-      const title = isOtpFailed
+-        ? 'کد یکبارمصرف حساب باربگ ثبت نشد'
+-        : (isRestricted
+-            ? 'حساب باربگ برای صدور بارنامه شهری محدود شده است'
+-            : (isLocked ? 'حساب باربگ مسدود است' : 'مشخصات حساب باربگ اشتباه است'))
++      const title = isRestricted
++        ? 'حساب باربگ برای صدور بارنامه شهری محدود شده است'
++        : (isLocked ? 'حساب باربگ مسدود است' : 'مشخصات حساب باربگ اشتباه است')
+ 
+       await log(taskId, 'error', errMsg)
+-      if (isOtpFailed) {
+-        await log(taskId, 'error', 'بعد از ۲ تلاش کامل، کد یکبارمصرف دریافت/ثبت نشد؛ عملیات‌های این اکانت متوقف می‌شود')
+-      }
+       await log(taskId, 'error', `حساب «${account.accountName}» (${account.username}) غیرفعال شد`)
+ 
+       // ۱) حساب را غیرفعال کن
