@@ -27,7 +27,9 @@ export async function GET(request: NextRequest) {
       const statusCounts = Object.fromEntries(statusGroups.map((g) => [g.status, g._count.id]))
       const total = Object.values(statusCounts).reduce((sum, c) => sum + c, 0) as number
       const active = statusCounts['active'] ?? 0
-      const disabled = statusCounts['disabled'] ?? 0
+      // نسخه‌های قبلی ورکر اشتباهاً مقدار inactive می‌نوشتند؛ برای سازگاری
+      // رکوردهای قدیمی را هم غیرفعال حساب می‌کنیم.
+      const disabled = (statusCounts['disabled'] ?? 0) + (statusCounts['inactive'] ?? 0)
       return NextResponse.json({ stats: { total, active, disabled, successfulToday, failedToday } })
     }
 
@@ -38,7 +40,9 @@ export async function GET(request: NextRequest) {
       { company: { contains: search, mode: 'insensitive' } },
       { notes: { contains: search, mode: 'insensitive' } },
     ]
-    if (status && status !== 'ALL') where.status = status
+    if (status && status !== 'ALL') {
+      where.status = status === 'disabled' ? { in: ['disabled', 'inactive'] } : status
+    }
 
     const [data, total] = await Promise.all([
       prisma.barBargAccount.findMany({
@@ -68,15 +72,21 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json()
-    if (!body.accountName || !body.username || !body.password) {
+    const accountName = typeof body.accountName === 'string' ? body.accountName.trim() : ''
+    const username = typeof body.username === 'string' ? body.username.trim() : ''
+    const password = typeof body.password === 'string' ? body.password : ''
+    const status = body.status === 'disabled' ? 'disabled' : 'active'
+    if (!accountName || !username || !password) {
       return NextResponse.json({ error: 'نام حساب، نام کاربری و رمز عبور الزامی است' }, { status: 400 })
     }
     // چند حساب می‌توانند نام کاربری یکسان داشته باشند؛ کاربر خودش با «نام حساب» آن‌ها را تفکیک می‌کند.
-    const encrypted = encryptPassword(body.password)
+    const encrypted = encryptPassword(password)
     const account = await prisma.barBargAccount.create({
       data: {
-        accountName: body.accountName, username: body.username, passwordEncrypted: encrypted,
-        company: body.company || null, status: body.status || 'active', notes: body.notes || null,
+        accountName, username, passwordEncrypted: encrypted,
+        company: typeof body.company === 'string' ? body.company.trim() || null : null,
+        status,
+        notes: typeof body.notes === 'string' ? body.notes.trim() || null : null,
       },
       select: { id: true, accountName: true, username: true, company: true, status: true, lastLogin: true, lastError: true, createdAt: true },
     })

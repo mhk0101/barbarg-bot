@@ -240,7 +240,7 @@ async function generateExcel(rows: AutomationRow[], q: ReportQuery, summary: Ret
   headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E40AF' } }
   headerRow.alignment = { horizontal: 'center', vertical: 'middle' }
   headerRow.height = 28
-  headerRow.eachCell(cell => {
+  headerRow.eachCell((cell: import('exceljs').Cell) => {
     cell.border = {
       top: { style: 'thin', color: { argb: 'FFD1D5DB' } },
       bottom: { style: 'thin', color: { argb: 'FFD1D5DB' } },
@@ -266,7 +266,7 @@ async function generateExcel(rows: AutomationRow[], q: ReportQuery, summary: Ret
     })
 
     const isEven = idx % 2 === 0
-    r.eachCell(cell => {
+    r.eachCell((cell: import('exceljs').Cell) => {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isEven ? 'FFF9FAFB' : 'FFFFFFFF' } }
       cell.border = {
         top: { style: 'thin', color: { argb: 'FFE5E7EB' } },

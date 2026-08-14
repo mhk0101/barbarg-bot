@@ -20,7 +20,7 @@ import { toast } from 'sonner'
 import {
   Plus, Pencil, Trash2, Search, Power, PowerOff,
   Settings, CheckCircle, XCircle, BarChart3, Loader2, ChevronLeft, ChevronRight,
-  Send, User, Truck, Package, MapPin, CreditCard, Eye, ChevronDown,
+  Send, User, Truck, Package, MapPin, CreditCard, Eye,
   Download, RefreshCw, AlertCircle,
 } from 'lucide-react'
 
@@ -413,8 +413,11 @@ export default function ProfilesPage() {
     } catch { /* empty */ }
   }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchProfiles() }, [fetchProfiles])
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchStats() }, [fetchStats])
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchAccounts() }, [fetchAccounts])
 
   /**
@@ -508,7 +511,7 @@ export default function ProfilesPage() {
     } finally {
       setImporting(false)
     }
-  }, [importing])
+  }, [accounts, importing])
 
   const openCreate = () => {
     setEditProfile(null)
@@ -1464,7 +1467,7 @@ function parsePlateParts(v: string): { two: string; letter: string; three: strin
 
   const s = raw.replace(/(?:ایران|ايران)/g, ' ').replace(/[-_|]/g, ' ').trim()
   const letter = (s.match(/[\u0600-\u06FF]+/) || [''])[0].trim()
-  let nums = s.match(/\d+/g) || []
+  let nums: string[] = Array.from(s.match(/\d+/g) || [])
 
   if (explicitIran) {
     const idx = nums.findIndex((n) => n === explicitIran)

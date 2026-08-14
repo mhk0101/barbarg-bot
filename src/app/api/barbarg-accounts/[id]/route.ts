@@ -23,13 +23,26 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     const { id } = await params
     const body = await request.json()
     const updateData: Record<string, unknown> = {}
-    if (body.accountName !== undefined) updateData.accountName = body.accountName
-    if (body.username !== undefined) updateData.username = body.username
-    if (body.company !== undefined) updateData.company = body.company || null
-    if (body.status !== undefined) updateData.status = body.status
-    if (body.notes !== undefined) updateData.notes = body.notes || null
-    if (body.phone !== undefined) updateData.phone = body.phone || null
-    if (body.password && body.password.length > 0) {
+    if (body.accountName !== undefined) {
+      const value = typeof body.accountName === 'string' ? body.accountName.trim() : ''
+      if (!value) return NextResponse.json({ error: 'نام حساب نمی‌تواند خالی باشد' }, { status: 400 })
+      updateData.accountName = value
+    }
+    if (body.username !== undefined) {
+      const value = typeof body.username === 'string' ? body.username.trim() : ''
+      if (!value) return NextResponse.json({ error: 'نام کاربری نمی‌تواند خالی باشد' }, { status: 400 })
+      updateData.username = value
+    }
+    if (body.company !== undefined) updateData.company = typeof body.company === 'string' ? body.company.trim() || null : null
+    if (body.status !== undefined) {
+      if (!['active', 'disabled'].includes(body.status)) {
+        return NextResponse.json({ error: 'وضعیت حساب نامعتبر است' }, { status: 400 })
+      }
+      updateData.status = body.status
+    }
+    if (body.notes !== undefined) updateData.notes = typeof body.notes === 'string' ? body.notes.trim() || null : null
+    if (body.phone !== undefined) updateData.phone = typeof body.phone === 'string' ? body.phone.trim() || null : null
+    if (typeof body.password === 'string' && body.password.length > 0) {
       updateData.passwordEncrypted = encryptPassword(body.password)
     }
 

@@ -1,0 +1,36 @@
+{
+  "trackingCode": "1316068955",
+  "sender": "شرکت شرکت",
+  "receiver": "شرکت شرکت",
+  "driverName": "مجتبي رباط جزي",
+  "headerUserName": "مجتبي رباط جزي",
+  "driverNationalCode": "0941615790",
+  "date": "1405/05/23",
+  "plate": {
+    "freeZone": false,
+    "twoDigit": "36",
+    "threeDigit": "193",
+    "letterValue": "21",
+    "letterText": "ع",
+    "iran": "29",
+    "fzTwoDigit": "",
+    "fzNumber": "",
+    "fzZone": "منطقه آزاد"
+  },
+  "announceCost": "10000000",
+  "insuranceCost": "0",
+  "origin": "خراسان رضوی، مشهد، محله هنرور، خیابان شهید آفتابی، غفوری ۹ - آفتابی ۷، شهید غفوری",
+  "destination": "خراسان رضوی، مشهد، محله نوغان، اصیلی - طبرسی ۱۸ - نوغان ۱۳، خیابان نوغان، نوغان ۹",
+  "selfDeclaredStart": "1405/05/23  02:06",
+  "estimatedEnd": "1405/05/23  02:10",
+  "shippingStart": "",
+  "shippingFinish": "",
+  "cargo": [
+    {
+      "name": "آجر",
+      "packaging": "سایر",
+      "count": "19",
+      "weightTon": "19"
+    }
+  ]
+}

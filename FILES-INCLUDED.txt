@@ -1,0 +1,17 @@
+فایل‌های تغییرکرده‌ی پروژه barbarg-bot
+تاریخ: 2026-08-13
+
+.gitignore
+package-lock.json
+PROJECT-REVIEW-FA.md
+src/app/(panel)/panel/barbarg-accounts/page.tsx
+src/app/(panel)/panel/profiles/page.tsx
+src/app/api/barbarg-accounts/[id]/route.ts
+src/app/api/barbarg-accounts/import-profile/route.ts
+src/app/api/barbarg-accounts/route.ts
+src/app/api/barbarg-accounts/test-login/route.ts
+src/app/api/reports/export/route.ts
+src/automation/engine/step1-engine.js
+worker/processor.ts
+
+ساختار پوشه‌ها حفظ شده است. فایل‌ها را روی ریشه پروژه کپی و Replace کنید.

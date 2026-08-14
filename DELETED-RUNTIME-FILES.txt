@@ -1,0 +1,19 @@
+فایل‌های Runtime حذف‌شده از مخزن
+
+برای جلوگیری از انتشار cookie نشست، اطلاعات صفحه ورود و logهای Runtime،
+محتوای این پوشه‌ها از پروژه حذف و در .gitignore قرار داده شد:
+
+- automation-data/sessions/       (فایل‌های نشست Playwright)
+- automation-data/screenshots/    (تصاویر ورود و خطا)
+- automation-data/html/           (snapshotهای HTML)
+
+همچنین این فایل‌های Runtime حذف شدند:
+- build-output.txt
+- dev.log
+- login-error.txt
+- login-output.txt
+- poc-output.txt
+- scheduler.log
+- worker.log
+
+این فایل‌های حساس عمداً داخل ZIP قرار نگرفته‌اند.

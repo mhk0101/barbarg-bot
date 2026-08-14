@@ -135,7 +135,6 @@ async function notify(title: string, message: string, type: 'info' | 'success' |
 
 function createOtpCodeProvider(accountId: string, listenAfter: Date, taskId: string) {
   let cachedCode = ''
-  let cachedSmsId = ''
   return async () => {
     if (cachedCode) return cachedCode
     const smsList = await prisma.smsMessage.findMany({
@@ -152,7 +151,6 @@ function createOtpCodeProvider(accountId: string, listenAfter: Date, taskId: str
       const code = extractSmsCode(`${sms.rawText || ''} ${sms.resultMessage || ''}`)
       if (!code) continue
       cachedCode = code
-      cachedSmsId = sms.id
       await prisma.smsMessage.update({
         where: { id: sms.id },
         data: { status: 'used', usedAt: new Date(), resultMessage: `کد ورود برای ثبت نهایی استفاده شد: ${code}` },
@@ -443,7 +441,7 @@ export async function processWaybillJob(taskId: string): Promise<void> {
       // ۱) حساب را غیرفعال کن
       await prisma.barBargAccount.update({
         where: { id: account.id },
-        data: { status: 'inactive', lastError: errMsg },
+        data: { status: 'disabled', lastError: errMsg },
       }).catch(() => {})
 
       // ۲) وظایف در انتظار همین حساب را لغو کن

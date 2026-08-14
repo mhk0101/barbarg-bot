@@ -183,6 +183,13 @@ export async function POST(request: NextRequest) {
             if (session.stopRequested || result.kind === 'stopped') break
 
             if (result.success) {
+              const d0 = result.data || {}
+              const missingCore = !d0.plateNumber || !d0.driverName || (!d0.originCity && !d0.originProvince) || (!d0.destCity && !d0.destProvince)
+              if (missingCore) {
+                pushImportLog(session, 'جزئیات ناقص بود — پروفایل ساخته نشد، دوباره تلاش می‌شود')
+                await sleepAbortable(8000, session)
+                continue
+              }
               await prisma.barBargAccount.update({ where: { id: account.id }, data: { lastLogin: new Date(), lastError: null } }).catch(() => {})
               const d = result.data
               const nid = String(account.username || '').replace(/\D/g, '')
@@ -230,6 +237,7 @@ export async function POST(request: NextRequest) {
             pushImportLog(session, `خطای غیرمنتظره: ${msg}`)
             await sleepAbortable(15000, session)
           } finally {
+            try { if (session.browser?.isConnected?.()) await session.browser.close() } catch { /* ignore */ }
             session.browser = null
           }
         }

@@ -2361,8 +2361,10 @@ function cleanSiteErrorMessage(raw) {
 
 /**
  * چالش امنیتی WAF — صفحه‌ی «Security check» با کپچای تصویری.
- * فعلا فقط تشخیص می‌دهیم (حلش پیاده نشده) تا لااقل صریح گزارش شود
- * به‌جای اینکه به‌عنوان «فرم باز نشد» رد شود.
+ *
+ * در اتوماسیون این صفحه حل نمی‌شود. اگر تصویر کپچای ورود پیدا نشود
+ * (چون الان WAF است نه DNTCaptcha)، صفحه رفرش می‌شود و معمولاً
+ * فرم لاگین برمی‌گردد. مرورگر بسته نمی‌شود.
  */
 async function isWafChallenge(page) {
   return page.evaluate(() => {
@@ -2371,6 +2373,143 @@ async function isWafChallenge(page) {
     const hasField = !!document.querySelector('input[name="pcode"], input[name="vcode"], input[name="req_data"]')
     return hasText || hasField
   }).catch(() => false)
+}
+
+async function hasLoginForm(page) {
+  return page.evaluate(() => !!document.querySelector('#NationalCode, #user-password, #inter')).catch(() => false)
+}
+
+/** همان رفرش حلقه‌ی ورود اتوماسیون: reload + ۲٫۵ ثانیه + برداشتن لایه‌ی loading */
+async function reloadLoginPageLikeAutomation(page) {
+  await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
+  await page.waitForTimeout(2500)
+  await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
+}
+
+async function fillLoginFields(page, credentials) {
+  await (await page.$('#NationalCode'))?.fill(credentials.username)
+  await (await page.$('#user-password'))?.fill(credentials.password)
+}
+
+/**
+ * اگر صفحه WAF است، دقیقاً همان کار اتوماسیون را می‌کند:
+ * رفرش صفحه (بدون بستن مرورگر) تا فرم لاگین برگردد.
+ */
+async function recoverWafByReload(page, label, max = 6) {
+  for (let i = 1; i <= max; i++) {
+    const waf = await isWafChallenge(page)
+    if (!waf) return true
+    console.log(`   ⚠ چالش WAF (${label}) — رفرش صفحه مثل اتوماسیون (${i}/${max})`)
+    await reloadLoginPageLikeAutomation(page)
+  }
+  if (await isWafChallenge(page)) {
+    console.log(`   ✖ چالش WAF بعد از ${max} رفرش هنوز هست`)
+    return false
+  }
+  return true
+}
+
+/**
+ * ورود به سامانه — کپی بی‌کم‌وکاست حلقه‌ی ورود runWaybillOnce.
+ * هم اتوماسیون و هم «دریافت اطلاعات» حساب‌های باربرگ از همین استفاده می‌کنند
+ * تا WAF در هر دو مسیر یکسان رد شود (رفرش صفحه، نه بستن مرورگر).
+ */
+async function loginToSite(page, credentials) {
+  if (!(await recoverWafByReload(page, 'قبل از ورود'))) {
+    return { ok: false, error: 'چالش امنیتی WAF بعد از رفرش برطرف نشد', kind: 'waf' }
+  }
+
+  await fillLoginFields(page, credentials)
+
+  let logged = false
+  let loginErr = 'ورود ناموفق'
+  let loginFatalKind = null
+  let failedWithGoodCaptcha = 0
+  for (let att = 1; att <= 6; att++) {
+    if (await isWafChallenge(page)) {
+      console.log(`   ⚠ چالش WAF هنگام ورود — رفرش (${att}/6)`)
+      await reloadLoginPageLikeAutomation(page)
+      await fillLoginFields(page, credentials)
+      continue
+    }
+
+    const t = await classifyTemplate(page)
+    if (t.error) {
+      console.log(`   ✖ کپچا: ${t.error} → رفرش`)
+      await reloadLoginPageLikeAutomation(page)
+      await fillLoginFields(page, credentials)
+      continue
+    }
+    const ans = solveMath(t.expr)
+    const minS = Math.min(...t.symbols.map(s => s.score))
+    console.log(`   ◈ کپچا: ${t.expr} ⇒ ${ans} (اطمینان ${(minS * 100).toFixed(0)}%)`)
+    if (ans === null || minS < 0.42) {
+      await (await page.$('#dntCaptchaRefreshButton'))?.click().catch(() => {})
+      await page.waitForTimeout(1500); continue
+    }
+    const ci = await page.$('#DNTCaptchaInputText')
+    await ci?.fill(''); await ci?.type(ans, { delay: 35 })
+    await page.waitForTimeout(300)
+    await (await page.$('#inter'))?.click()
+
+    const res = await waitLoginResult(page, 45000)
+    if (res.ok) {
+      logged = true
+      console.log(`   ✅ ورود موفق (${res.waited}s)` + (res.transient ? '  [با وجود خطای موقتی سایت]' : ''))
+      break
+    }
+    if (await isWafChallenge(page)) {
+      console.log(`   ⚠ بعد از کلیک ورود، چالش WAF آمد — رفرش (${att}/6)`)
+      await reloadLoginPageLikeAutomation(page)
+      await fillLoginFields(page, credentials)
+      continue
+    }
+    if (res.fatal) {
+      loginErr = res.error
+      if (res.credentialKind) {
+        loginFatalKind = res.credentialKind
+        console.log(`   🛑 ${res.error}`)
+        if (res.rawError) console.log(`      پیام سایت: «${res.rawError}»`)
+        console.log(`      حساب: ${credentials.username}`)
+      } else {
+        console.log(`   🛑 خطای قطعی: ${res.error}`)
+      }
+      break
+    }
+    loginErr = res.error || loginErr
+    console.log(`   ✖ ورود نشد (${res.waited}s)${res.error ? ' — ' + res.error.slice(0, 90) : ''}`)
+
+    if (!res.transient) failedWithGoodCaptcha++
+    if (failedWithGoodCaptcha >= 3) {
+      const stillLogin = await hasLoginForm(page)
+      if (stillLogin) {
+        loginFatalKind = 'bad_credentials'
+        loginErr = 'نام کاربری (کد ملی) یا رمز عبور حساب باربگ اشتباه است — ' +
+                   'از صفحه «حساب‌های باربگ» اصلاحش کنید'
+        console.log(`   🛑 ${loginErr}`)
+        console.log(`      پس از ${failedWithGoodCaptcha} تلاش با کپچای درست، هنوز روی صفحه‌ی ورودیم`)
+        console.log(`      حساب: ${credentials.username}`)
+        break
+      }
+    }
+
+    if (res.transient) {
+      console.log('   ↻ رفرش کامل صفحه (سایت خطای موقتی داشت)...')
+      await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
+      await page.waitForTimeout(3000)
+      await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
+    } else {
+      await (await page.$('#dntCaptchaRefreshButton'))?.click().catch(() => {})
+      await page.waitForTimeout(1200)
+    }
+    await fillLoginFields(page, credentials)
+  }
+
+  return {
+    ok: logged,
+    error: loginErr,
+    kind: logged ? 'ok' : (loginFatalKind || 'error'),
+  }
 }
 
 /**
@@ -2905,91 +3044,10 @@ async function runWaybillOnce(opts) {
     await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
   }
 
-  await (await page.$('#NationalCode'))?.fill(credentials.username)
-  await (await page.$('#user-password'))?.fill(credentials.password)
-
-  let logged = false
-  let loginErr = 'ورود ناموفق'
-  let captchaAttempts = 0
-  let loginFatalKind = null   // 'bad_credentials' یا 'account_locked'
-  let failedWithGoodCaptcha = 0
-  for (let att = 1; att <= 6; att++) {
-    captchaAttempts = att
-    const t = await classifyTemplate(page)
-    if (t.error) {
-      console.log(`   ✖ کپچا: ${t.error} → رفرش`)
-      await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
-      await page.waitForTimeout(2500)
-      await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
-      await (await page.$('#NationalCode'))?.fill(credentials.username)
-      await (await page.$('#user-password'))?.fill(credentials.password)
-      continue
-    }
-    const ans = solveMath(t.expr)
-    const minS = Math.min(...t.symbols.map(s => s.score))
-    console.log(`   ◈ کپچا: ${t.expr} ⇒ ${ans} (اطمینان ${(minS * 100).toFixed(0)}%)`)
-    if (ans === null || minS < 0.42) {
-      await (await page.$('#dntCaptchaRefreshButton'))?.click().catch(() => {})
-      await page.waitForTimeout(1500); continue
-    }
-    const ci = await page.$('#DNTCaptchaInputText')
-    await ci?.fill(''); await ci?.type(ans, { delay: 35 })
-    await page.waitForTimeout(300)
-    await (await page.$('#inter'))?.click()
-
-    const res = await waitLoginResult(page, 45000)
-    if (res.ok) {
-      logged = true
-      console.log(`   ✅ ورود موفق (${res.waited}s)` + (res.transient ? '  [با وجود خطای موقتی سایت]' : ''))
-      break
-    }
-    if (res.fatal) {
-      loginErr = res.error
-      if (res.credentialKind) {
-        loginFatalKind = res.credentialKind
-        console.log(`   🛑 ${res.error}`)
-        if (res.rawError) console.log(`      پیام سایت: «${res.rawError}»`)
-        console.log(`      حساب: ${credentials.username}`)
-      } else {
-        console.log(`   🛑 خطای قطعی: ${res.error}`)
-      }
-      break
-    }
-    loginErr = res.error || loginErr
-    console.log(`   ✖ ورود نشد (${res.waited}s)${res.error ? ' — ' + res.error.slice(0, 90) : ''}`)
-
-    /* پاپ‌آپ ممکن است قبل از خواندن محو شده باشد. اگر سه بار پشت سر هم
-       با کپچای درست وارد نشدیم و هنوز روی صفحه‌ی ورودیم، تقریبا قطعی است
-       که مشخصات حساب اشتباه است — وگرنه ساعت‌ها بی‌فایده تلاش می‌کنیم
-       و ممکن است حساب در سامانه قفل شود. */
-    if (!res.transient) failedWithGoodCaptcha++
-    if (failedWithGoodCaptcha >= 3) {
-      const stillLogin = await page.evaluate(() =>
-        !!document.querySelector('#NationalCode, #user-password, #inter')).catch(() => false)
-      if (stillLogin) {
-        loginFatalKind = 'bad_credentials'
-        loginErr = 'نام کاربری (کد ملی) یا رمز عبور حساب باربگ اشتباه است — ' +
-                   'از صفحه «حساب‌های باربگ» اصلاحش کنید'
-        console.log(`   🛑 ${loginErr}`)
-        console.log(`      پس از ${failedWithGoodCaptcha} تلاش با کپچای درست، هنوز روی صفحه‌ی ورودیم`)
-        console.log(`      حساب: ${credentials.username}`)
-        break
-      }
-    }
-
-    if (res.transient) {
-      console.log('   ↻ رفرش کامل صفحه (سایت خطای موقتی داشت)...')
-      await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
-      await page.waitForTimeout(3000)
-      await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
-    } else {
-      await (await page.$('#dntCaptchaRefreshButton'))?.click().catch(() => {})
-      await page.waitForTimeout(1200)
-    }
-    await (await page.$('#NationalCode'))?.fill(credentials.username)
-    await (await page.$('#user-password'))?.fill(credentials.password)
+  {
+    const loginRes = await loginToSite(page, credentials)
+    if (!loginRes.ok) return fail(loginRes.error, loginRes.kind)
   }
-  if (!logged) return fail(loginErr, loginFatalKind || 'error')
 
   console.log('\n→ باز کردن فرم بارنامه...')
   {
@@ -3009,7 +3067,21 @@ async function runWaybillOnce(opts) {
     }
   }
 
-  const hasForm = await page.$('#senderSelectType')
+  let hasForm = await page.$('#senderSelectType')
+  if (!hasForm && await isWafChallenge(page)) {
+    console.log('   ⚠ فرم نیامد — چالش WAF است؛ رفرش مثل حلقه‌ی ورود...')
+    if (await recoverWafByReload(page, 'فرم بارنامه')) {
+      if (await hasLoginForm(page) && !(await isLoggedInByUserMenu(page))) {
+        const again = await loginToSite(page, credentials)
+        if (!again.ok) return fail(again.error, again.kind)
+        const navAgain = await gotoR(page, TARGET_URL, 'فرم بارنامه')
+        if (navAgain === 'BLOCKED') return fail('IP بلاک شد هنگام باز کردن فرم بارنامه', 'block')
+        await page.waitForTimeout(2500)
+        await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
+      }
+      hasForm = await page.$('#senderSelectType')
+    }
+  }
   if (!hasForm) {
     // چرا فرم نیامد؟ بلاک؟ مشغول؟ WAF؟ پرت‌شدن به لاگین؟
     const h = await pageHealth(page)
@@ -3588,12 +3660,35 @@ function splitLocation(raw) {
   const t = String(raw || '').replace(/\s+/g, ' ').trim()
   if (!t) return { province: '', city: '', address: '' }
 
-  const parts = t.split(/\s*[-–—/|،,]\s*/).filter(Boolean)
-  if (parts.length >= 3) {
-    return { province: parts[0], city: parts[1], address: parts.slice(2).join('، ') }
+  const dashParts = t.split(/\s*[-–—/|]\s*/).filter(Boolean)
+  if (dashParts.length >= 3) {
+    return { province: dashParts[0], city: dashParts[1], address: dashParts.slice(2).join('، ') }
   }
-  if (parts.length === 2) return { province: parts[0], city: parts[1], address: '' }
+
+  const commaParts = t.split(/\s*[،,]\s*/).filter(Boolean)
+  if (commaParts.length >= 3) {
+    return { province: commaParts[0], city: commaParts[1], address: commaParts.slice(2).join('، ') }
+  }
+  if (commaParts.length === 2) return { province: commaParts[0], city: commaParts[1], address: '' }
+  if (dashParts.length === 2) return { province: dashParts[0], city: dashParts[1], address: '' }
   return { province: t, city: t, address: '' }
+}
+
+function pickText(...vals) {
+  for (const v of vals) {
+    const t = String(v || '').replace(/[\u200c\s]+/g, ' ').trim()
+    if (t) return t
+  }
+  return ''
+}
+
+function pickLocation(fromHist, fromDetail) {
+  const score = (x) => {
+    if (!x) return 0
+    return (x.province ? 2 : 0) + (x.city ? 2 : 0) + (x.address ? Math.min(8, Math.floor(String(x.address).length / 6)) : 0)
+  }
+  return score(fromHist) >= score(fromDetail) ? (fromHist || fromDetail || { province: '', city: '', address: '' })
+    : (fromDetail || fromHist || { province: '', city: '', address: '' })
 }
 
 /** «علي پرون» → { firstName:'علي', lastName:'پرون' } */
@@ -3681,10 +3776,21 @@ async function scrapeHistoryTable(page) {
       const td = Array.from(tr.querySelectorAll('td'))
       if (td.length < 12) continue
 
-      // آدرس کامل در title است، متن سلول کوتاه‌شده («کرمان، سیرج...»)
+      // آدرس کامل معمولاً در title / data-original-title است؛ متن سلول کوتاه شده
       const titleOf = (cell) => {
-        const el = cell.querySelector('[title]')
-        return el ? String(el.getAttribute('title') || '').trim() : clean(cell.textContent)
+        if (!cell) return ''
+        const attrs = [
+          cell.getAttribute('title'),
+          cell.getAttribute('data-original-title'),
+          cell.getAttribute('data-bs-original-title'),
+        ]
+        for (const a of attrs) if (a && a.trim()) return a.trim()
+        const el = cell.querySelector('[title], [data-original-title], [data-bs-original-title]')
+        if (el) {
+          const t = el.getAttribute('title') || el.getAttribute('data-original-title') || el.getAttribute('data-bs-original-title') || ''
+          if (t.trim()) return t.trim()
+        }
+        return clean(cell.textContent)
       }
 
       rows.push({
@@ -3736,10 +3842,10 @@ async function scrapeBarnameDetail(page) {
     const letter = sel('Part3')
 
     return {
-      trackingCode: val('trackingCode'),
-      sender: val('sender'),
-      receiver: val('receiver'),
-      driverName: val('driverName'),
+      trackingCode: val('trackingCode', 'TrackingCode', 'trackingcode'),
+      sender: val('sender', 'Sender', 'rqsSender'),
+      receiver: val('receiver', 'Receiver', 'rqsReceiver'),
+      driverName: val('driverName', 'DriverName', 'rqsDriver'),
       // نام کاربر از نوار بالا — منبع دوم و مطمئن‌تر
       headerUserName: (() => {
         const clean = (t) => String(t || '').replace(/[\u200c\s]+/g, ' ').trim()
@@ -3770,8 +3876,8 @@ async function scrapeBarnameDetail(page) {
 
       announceCost: val('announceCost'),
       insuranceCost: val('insuranceCost'),
-      origin: val('origin'),
-      destination: val('destination'),
+      origin: val('origin', 'Origin', 'rqsOrigin'),
+      destination: val('destination', 'Destination', 'rqsDestination'),
 
       selfDeclaredStart: val('SelfDeclaredTimeOfStartShipment'),
       estimatedEnd: val('EstimatedTimeOfEndShipment'),
@@ -3781,6 +3887,20 @@ async function scrapeBarnameDetail(page) {
       cargo,
     }
   }).catch(() => null)
+}
+
+/** جزئیات گاهی دیر با AJAX پر می‌شود؛ صبر می‌کنیم تا حداقل یک فیلد اصلی مقدار بگیرد. */
+async function waitForDetailFilled(page, timeoutMs = 20000) {
+  const t0 = Date.now()
+  let last = null
+  while (Date.now() - t0 < timeoutMs) {
+    last = await scrapeBarnameDetail(page)
+    if (last && (last.trackingCode || last.sender || last.origin || last.driverNationalCode || last.destination)) {
+      return last
+    }
+    await page.waitForTimeout(500)
+  }
+  return last
 }
 
 /**
@@ -3842,7 +3962,10 @@ async function importLastBarname(opts) {
     ? !!(await page.$(sel).then(async (el) => { if (!el) return false; await el.click().catch(() => {}); return true }).catch(() => false))
     : humanClick(page, sel)
 
-  const done = async (r) => { await browser.close().catch(() => {}); return r }
+  const done = async (r) => {
+    try { if (browser && browser.isConnected()) await browser.close() } catch (e) {}
+    return r
+  }
   const stopRequested = async () => {
     if (!shouldStop) return false
     try { return await shouldStop() } catch (e) { return false }
@@ -3871,52 +3994,9 @@ async function importLastBarname(opts) {
       return done({ success: false, error: 'سرور مشغول است: ' + m, kind: 'busy' })
     }
 
-    await iType( '#NationalCode', credentials.username)
-    await iShort()
-    await iType( '#user-password', credentials.password)
-    await iShort()
-
-    // ── حل کپچا و ورود ──
-    let logged = false
-    let lastErr = 'ورود ناموفق'
-    let credKind = null
-
-    for (let att = 1; att <= 6; att++) {
-      const t = await classifyTemplate(page)
-      if (t.error) {
-        console.log(`   ✖ کپچا: ${t.error} → رفرش`)
-        await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
-        await iSettle()
-        await iType( '#NationalCode', credentials.username)
-        await iShort()
-        await iType( '#user-password', credentials.password)
-        continue
-      }
-      const ans = solveMath(t.expr)
-      const minS = Math.min(...t.symbols.map((x) => x.score))
-      console.log(`   ◈ کپچا: ${t.expr} ⇒ ${ans} (${(minS * 100).toFixed(0)}%)`)
-      if (ans === null || minS < 0.42) {
-        await iClick( '#dntCaptchaRefreshButton')
-        await iPause(1800, 3200)
-        continue
-      }
-      await iType( '#DNTCaptchaInputText', ans)
-      await iMedium()
-      await iClick( '#inter')
-
-      const res = await waitLoginResult(page, 45000)
-      if (res.ok) { logged = true; console.log(`   ✅ ورود موفق (${res.waited}s)`); break }
-      lastErr = res.error || lastErr
-      if (res.credentialKind) { credKind = res.credentialKind; console.log(`   🛑 ${res.error}`); break }
-      console.log(`   ✖ ورود نشد — ${String(res.error || '').slice(0, 80)}`)
-      await iPause(2000, 4000)
-      await iClick( '#dntCaptchaRefreshButton')
-      await iType( '#NationalCode', credentials.username)
-      await iShort()
-      await iType( '#user-password', credentials.password)
-    }
-
-    if (!logged) return done({ success: false, error: lastErr, kind: credKind || 'error' })
+    // ورود دقیقاً مثل تب اتوماسیون: اگر WAF آمد صفحه رفرش می‌شود تا فرم لاگین برگردد
+    const loginRes = await loginToSite(page, credentials)
+    if (!loginRes.ok) return done({ success: false, error: loginRes.error, kind: loginRes.kind })
 
     /* نام دارنده‌ی حساب را همین‌جا از نوار بالا بردار —
        قبل از رفتن به تاریخچه، تا حتی اگر تاریخچه خالی بود هم داشته باشیمش. */
@@ -3936,11 +4016,42 @@ async function importLastBarname(opts) {
     if (!navHist) {
       return done({ success: false, error: 'صفحه‌ی تاریخچه باز نشد', kind: 'block' })
     }
+    await page.waitForTimeout(2500)
+    await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
+
+    if (await isWafChallenge(page)) {
+      console.log('   ⚠ تاریخچه باز نشد — چالش WAF است؛ رفرش مثل اتوماسیون...')
+      if (!(await recoverWafByReload(page, 'تاریخچه'))) {
+        return done({ success: false, error: 'چالش امنیتی WAF هنگام باز کردن تاریخچه', kind: 'waf' })
+      }
+      if (await hasLoginForm(page) && !(await isLoggedInByUserMenu(page))) {
+        console.log('   ↻ بعد از رفرش WAF به فرم ورود برگشتیم — ورود مجدد مثل اتوماسیون')
+        const again = await loginToSite(page, credentials)
+        if (!again.ok) return done({ success: false, error: again.error, kind: again.kind })
+        const navHist2 = await gotoR(page, HISTORY_URL, 'تاریخچه')
+        if (navHist2 === 'BLOCKED' || !navHist2) {
+          return done({ success: false, error: 'صفحه‌ی تاریخچه بعد از عبور از WAF باز نشد', kind: 'block' })
+        }
+        await page.waitForTimeout(2500)
+        await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
+      }
+    }
     await iSettle( 'صفحه‌ی تاریخچه')
 
     // دکمه‌ی «جزئیات» — ممکن است با AJAX دیر بیاید
     let hasBtn = false
     for (let i = 0; i < 30; i++) {
+      if (await isWafChallenge(page)) {
+        console.log('   ⚠ وسط انتظار تاریخچه دوباره WAF آمد — رفرش')
+        await recoverWafByReload(page, 'تاریخچه (انتظار دکمه)')
+        if (await hasLoginForm(page) && !(await isLoggedInByUserMenu(page))) {
+          const again = await loginToSite(page, credentials)
+          if (!again.ok) return done({ success: false, error: again.error, kind: again.kind })
+          await gotoR(page, HISTORY_URL, 'تاریخچه')
+          await page.waitForTimeout(2500)
+          await page.evaluate(() => document.getElementById('loading')?.remove()).catch(() => {})
+        }
+      }
       hasBtn = await page.evaluate(() =>
         !!document.querySelector('#btnDetailfirst, button[name="btnDetailfirst"]')).catch(() => false)
       if (hasBtn) break
@@ -3948,6 +4059,9 @@ async function importLastBarname(opts) {
     }
 
     if (!hasBtn) {
+      if (await isWafChallenge(page)) {
+        return done({ success: false, error: 'چالش امنیتی WAF هنگام خواندن تاریخچه', kind: 'waf' })
+      }
       const sw = await readSwalError(page)
       await page.screenshot({ path: path.join(OUT, 'import-nohistory.png'), fullPage: true }).catch(() => {})
       return done({
@@ -3964,7 +4078,16 @@ async function importLastBarname(opts) {
        مقصد در ویژگی title سلول‌هاست — جایی که استان و شهر هم جدا آمده‌اند:
            «کرمان، سیرجان، خیابان ابن سینا-سیرجان-کرمان»
        صفحه‌ی جزئیات فقط متن فشرده دارد، پس جدول دقیق‌تر است. */
-    await iMedium()   // فرصت به DataTables برای رندر کامل
+    await iMedium()
+    for (let i = 0; i < 20; i++) {
+      const n = await page.evaluate(() => {
+        const tbl = document.querySelector('#myTable tbody') || document.querySelector('table.dataTable tbody')
+        return tbl ? tbl.querySelectorAll('tr').length : 0
+      }).catch(() => 0)
+      if (n > 0) break
+      await page.waitForTimeout(400)
+    }
+    await page.waitForTimeout(800)
     const historyRows = await scrapeHistoryTable(page)
     if (historyRows.length) {
       console.log(`   ✔ ${historyRows.length} بارنامه در جدول تاریخچه`)
@@ -4001,10 +4124,16 @@ async function importLastBarname(opts) {
 
     await iSettle( 'صفحه‌ی جزئیات')
     console.log(`   ✔ صفحه‌ی جزئیات باز شد: ${page.url()}`)
+    console.log('   ⏱ صبر تا فیلدهای جزئیات واقعاً پر شوند...')
 
-    await iMedium()
-    const raw = await scrapeBarnameDetail(page)
+    let raw = await waitForDetailFilled(page, 20000)
+    if (!raw) raw = await scrapeBarnameDetail(page)
     if (!raw) return done({ success: false, error: 'خواندن اطلاعات بارنامه ناموفق بود', kind: 'error' })
+    if (!raw.trackingCode && !raw.sender && !raw.origin) {
+      console.log('   ⚠ فیلدهای جزئیات هنوز خالی‌اند — یک بار دیگر می‌خوانم')
+      await page.waitForTimeout(2500)
+      raw = await scrapeBarnameDetail(page) || raw
+    }
 
     await page.screenshot({ path: path.join(OUT, 'import-detail.png'), fullPage: true }).catch(() => {})
     try {
@@ -4015,18 +4144,22 @@ async function importLastBarname(opts) {
     /* جدول تاریخچه اولویت دارد چون آدرس کامل و تفکیک‌شدهی
        استان/شهر را دارد؛ صفحه‌ی جزئیات فقط متن فشرده دارد. */
     const hist = historyRows[0] || null
-    const o = hist && hist.originTitle ? parseHistoryLocation(hist.originTitle) : splitLocation(raw.origin)
-    const d = hist && hist.destTitle ? parseHistoryLocation(hist.destTitle) : splitLocation(raw.destination)
-    /* نام راننده: اول از نوار بالای سایت، بعد از فیلد #driverName.
-       نوار بالا مطمئن‌تر است چون همیشه و در هر صفحه‌ای حضور دارد. */
-    const driverSource = headerName || raw.headerUserName || raw.driverName
-    const drv = splitPersonName(driverSource || hist?.driver || '')
+    const o = pickLocation(
+      hist && hist.originTitle ? parseHistoryLocation(hist.originTitle) : null,
+      splitLocation(raw.origin),
+    )
+    const d = pickLocation(
+      hist && hist.destTitle ? parseHistoryLocation(hist.destTitle) : null,
+      splitLocation(raw.destination),
+    )
+    const driverSource = pickText(headerName, raw.headerUserName, raw.driverName, hist && hist.driver)
+    const drv = splitPersonName(driverSource)
     if (headerName && raw.driverName && fold_(headerName) !== fold_(raw.driverName)) {
       console.log(`   ⚠ نام نوار بالا («${headerName}») با نام بارنامه («${raw.driverName}») یکی نیست`)
       console.log('      از نام نوار بالا استفاده شد — در صورت نیاز در پروفایل اصلاحش کن')
     }
-    const snd = splitPersonName(raw.sender || hist?.sender || '')
-    const rcv = splitPersonName(raw.receiver || hist?.receiver || '')
+    const snd = splitPersonName(pickText(raw.sender, hist && hist.sender))
+    const rcv = splitPersonName(pickText(raw.receiver, hist && hist.receiver))
     const c0 = raw.cargo[0] || {}
 
     const letter = raw.plate.letterText || PLATE_LETTER_BY_VALUE[raw.plate.letterValue] || ''
@@ -4038,9 +4171,10 @@ async function importLastBarname(opts) {
     // پلاک جدول به قالب «45|923-ع-17» است
     const histPlate = hist ? parsePlateFromHistory(hist.plateRaw) : null
     const plateText = (histPlate && histPlate.text) || detailPlate
+    const trackingCode = pickText(raw.trackingCode, hist && hist.trackingCode)
 
     const profile = {
-      name: `وارد‌شده از بارنامه ${raw.trackingCode || ''}`.trim(),
+      name: `وارد‌شده از بارنامه ${trackingCode || ''}`.trim(),
 
       senderFirstName: snd.firstName,
       senderLastName: snd.lastName,
@@ -4066,25 +4200,38 @@ async function importLastBarname(opts) {
       destCity: d.city,
       destAddress: d.address,
 
-      trackingCode: raw.trackingCode || hist?.trackingCode || '',
-      // همه‌ی بارنامه‌های تاریخچه — برای گزارش و انتخاب کاربر
+      trackingCode,
       historyCount: historyRows.length,
       shippingStart: raw.shippingStart || raw.selfDeclaredStart || '',
       shippingFinish: raw.shippingFinish || raw.estimatedEnd || '',
     }
 
     console.log('\n── اطلاعات استخراج‌شده ──')
-    console.log(`   کد رهگیری : ${raw.trackingCode || '—'}`)
-    console.log(`   فرستنده   : ${raw.sender || '—'}`)
-    console.log(`   گیرنده    : ${raw.receiver || '—'}`)
+    console.log(`   کد رهگیری : ${profile.trackingCode || '—'}`)
+    console.log(`   فرستنده   : ${pickText(raw.sender, hist && hist.sender) || '—'}`)
+    console.log(`   گیرنده    : ${pickText(raw.receiver, hist && hist.receiver) || '—'}`)
     console.log(`   راننده    : ${drv.full || '—'} | ${profile.driverNationalId || '—'}`)
     console.log(`   پلاک      : ${plateText || '—'}`)
     console.log(`   کالا      : ${profile.cargoName || '—'} | ${profile.cargoPackaging || '—'} | ` +
                 `${profile.cargoQuantity || '—'} بسته | ${profile.cargoWeight || '—'} تن`)
     console.log(`   ارزش      : ${profile.cargoValue || '—'}`)
-    console.log(`   مبدا      : ${raw.origin || '—'}`)
-    console.log(`   مقصد      : ${raw.destination || '—'}`)
+    console.log(`   مبدا      : ${[profile.originProvince, profile.originCity, profile.originAddress].filter(Boolean).join('، ') || '—'}`)
+    console.log(`   مقصد      : ${[profile.destProvince, profile.destCity, profile.destAddress].filter(Boolean).join('، ') || '—'}`)
     console.log(`   کالاها    : ${raw.cargo.length} ردیف`)
+
+    const incomplete = !profile.plateNumber || !profile.driverName
+      || (!profile.originCity && !profile.originProvince)
+      || (!profile.destCity && !profile.destProvince)
+      || !profile.cargoName
+    if (incomplete) {
+      console.log('   ✖ جزئیات ناقص است — پروفایل ساخته نمی‌شود، تلاش مجدد')
+      return done({
+        success: false,
+        error: 'جزئیات بارنامه ناقص خوانده شد (مبدا/مقصد یا پلاک خالی ماند)',
+        kind: 'error',
+        data: profile,
+      })
+    }
 
     return done({ success: true, data: profile, raw, history: historyRows })
   } catch (e) {
@@ -4297,7 +4444,7 @@ module.exports = {
   fillPersonStep, fillDriverVehicleStep, fillDriverVehicleStepWithRetries, fillCargoStep, fillLocationStep,
   captureLocationFromMapStep, applySavedMapLocationStep,
   passReviewStep, fillFareStep, finalConfirmStep,
-  pageHealth, isWafChallenge, waitUntilSiteBack,
+  pageHealth, isWafChallenge, recoverWafByReload, loginToSite, waitUntilSiteBack,
   isNetBlockError, isPageDeadError, isAccountRestrictedError, isServerTempError, isPermanentError,
   classifyCredentialError,
   isServerBusy, readBusyMessage, readSwalError, waitForSwalError, sleepWithLog,

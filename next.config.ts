@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
   /* pdfkit و exceljs فایل‌های جانبی (مثل فونت‌های .afm) را از دیسک
      می‌خوانند. اگر باندل شوند، آن فایل‌ها کپی نمی‌شوند و هنگام
      اجرا خطای ENOENT: Helvetica.afm می‌دهند. */
-  serverExternalPackages: ['pdfkit', 'exceljs'],
+  serverExternalPackages: ['pdfkit', 'exceljs', 'playwright'],
   
   // 👇 این خط را اضافه کنید
   allowedDevOrigins: ['aim-upfront-statue.ngrok-free.dev'],
