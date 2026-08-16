@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/auth/permissions'
 import { browserManager } from '@/automation/browser/BrowserManager'
 import { chromium } from 'playwright'
 import path from 'path'
@@ -7,6 +8,8 @@ import fs from 'fs'
 const SESSION_DIR = path.join(process.cwd(), 'automation-data', 'sessions')
 
 export async function POST(request: NextRequest) {
+  const guard = await requirePermission(request, 'manage_workers')
+  if (!guard.ok) return guard.response
   try {
     const body = await request.json()
 
@@ -42,7 +45,9 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'manage_workers')
+  if (!guard.ok) return guard.response
   try {
     if (!fs.existsSync(SESSION_DIR)) return NextResponse.json({ sessions: [] })
     const files = fs.readdirSync(SESSION_DIR).filter((f) => f.endsWith('.json'))

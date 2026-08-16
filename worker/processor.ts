@@ -46,12 +46,6 @@ const DO_SUBMIT = process.env.BARBARG_SUBMIT !== 'false'   // پیش‌فرض: �
 /** مرورگر دیده شود یا نه (مثل تستر پیش‌فرض دیده می‌شود) */
 const HEADLESS = process.env.BARBARG_HEADLESS === 'true'
 
-/** 🖥 [موقت] فقط در «قسمت اتوماسیون» (ورکر): بعد از رسیدن به گام آخر،
-    مرورگر را باز نگه دار — هر نتیجه‌ای که بود (موفق یا ناموفق).
-    پیش‌فرض روشن است. برای خاموش‌کردن موقت: BARBARG_KEEP_OPEN_ON_FINAL=false
-    برای حذف کامل این قابلیت: همین بلاک و خط `keepOpenOnFinal:` پایین را بردارید. */
-const KEEP_OPEN_ON_FINAL = process.env.BARBARG_KEEP_OPEN_ON_FINAL !== 'false'
-
 /** خطاهایی که تکرارشان بی‌فایده است */
 const PERMANENT = /مختصات انتخابی نامعتبر|کد ملی|کدملی|شناسه ملی|اعتبار کافی|موجودی|تکراری|مجوز|دسترسی ندارید|رمز|کلمه عبور|کاربری یافت نشد|قفل|مسدود|غیرفعال|صدور غیر مجاز بارنامه شهری|محدودیت در صدور بارنامه شهری|لیست سیاه سامانه|لیست سیاه/
 
@@ -61,6 +55,14 @@ const MAX_RESTARTS = Number(process.env.BARBARG_MAX_RESTARTS || 20)
 /** بعد از ثبت موفق واقعی، برای همان ترکیب «اکانت + پلاک» این بازه صبر می‌کنیم. پیش‌فرض: ۳۰ تا ۳۵ دقیقه. */
 const SUCCESS_COOLDOWN_MIN_MS = Number(process.env.BARBARG_SUCCESS_COOLDOWN_MIN_MS || 30 * 60 * 1000)
 const SUCCESS_COOLDOWN_MAX_MS = Number(process.env.BARBARG_SUCCESS_COOLDOWN_MAX_MS || 35 * 60 * 1000)
+
+/** وقتی سایت خطای «محدودیت زمانی در ثبت بارنامه شهری» می‌دهد،
+    عملیات آن اکانت این‌قدر متوقف می‌شود و بعد دوباره تلاش می‌کنیم. پیش‌فرض: ۳۰ دقیقه. */
+const RATE_LIMIT_COOLDOWN_MS = Number(process.env.BARBARG_RATE_LIMIT_COOLDOWN_MS || 30 * 60 * 1000)
+
+/** قفل داخل‌پردازشی: هر اکانت در هر لحظه فقط یک عملیات فعال داشته باشد.
+    (با concurrency بیش از ۱، دو وظیفه‌ی یک اکانت نباید همزمان مرورگر باز کنند) */
+const activeAccounts = new Set<string>()
 
 function normalisePlateForCooldown(v: string): string {
   return String(v || '')
@@ -86,6 +88,120 @@ function randomSuccessCooldownMs(): number {
   const min = Math.min(SUCCESS_COOLDOWN_MIN_MS, SUCCESS_COOLDOWN_MAX_MS)
   const max = Math.max(SUCCESS_COOLDOWN_MIN_MS, SUCCESS_COOLDOWN_MAX_MS)
   return Math.floor(min + Math.random() * (max - min + 1))
+}
+
+/* ─────────────────────────────────────────────────────────────
+   محدودیت زمانی سایت («با توجه به محدودیت زمانی در ثبت بارنامه شهری ...»)
+   وقتی این خطا بیاید، کل عملیات آن اکانت ۳۰ دقیقه متوقف می‌شود و
+   وظیفه‌ها به‌جای شکست، برای نیم ساعت بعد دوباره زمان‌بندی می‌شوند.
+   ───────────────────────────────────────────────────────────── */
+function rateLimitKey(accountId: string): string {
+  return `automation.rateLimitCooldown.${accountId}`
+}
+
+async function getRateLimitCooldownUntil(accountId: string): Promise<Date | null> {
+  const rec = await prisma.setting.findUnique({ where: { key: rateLimitKey(accountId) } }).catch(() => null)
+  const value = rec?.value as { until?: string } | null | undefined
+  const until = value?.until ? new Date(value.until) : null
+  return until && Number.isFinite(until.getTime()) ? until : null
+}
+
+async function setRateLimitCooldown(accountId: string, message: string): Promise<Date> {
+  const until = new Date(Date.now() + RATE_LIMIT_COOLDOWN_MS)
+  await prisma.setting.upsert({
+    where: { key: rateLimitKey(accountId) },
+    update: { value: { until: until.toISOString(), accountId, reason: 'rate_limit', message: message.slice(0, 300), updatedAt: new Date().toISOString() } },
+    create: { key: rateLimitKey(accountId), value: { until: until.toISOString(), accountId, reason: 'rate_limit', message: message.slice(0, 300), updatedAt: new Date().toISOString() } },
+  }).catch(() => {})
+  return until
+}
+
+/**
+ * وظیفه را بدون سوزاندن «تلاش مجدد»، برای بعد دوباره در صف می‌گذارد.
+ * جاب فعلی بسته می‌شود و جاب جدیدی با همان مشخصات ولی با delay ساخته می‌شود.
+ * (برای محدودیت زمانی سایت یا وقتی اکانت مشغول عملیات دیگری است)
+ */
+async function rescheduleForRateLimit(
+  taskId: string, automationResultId: string | null, message: string,
+  delayMs: number, startedAt: number, label = 'محدودیت زمانی سایت',
+): Promise<void> {
+  const oldJob = await prisma.job.findUnique({ where: { id: taskId } })
+  if (!oldJob) return
+
+  const runAt = new Date(Date.now() + delayMs)
+
+  const newJob = await prisma.job.create({
+    data: {
+      waybillId: oldJob.waybillId,
+      profileId: oldJob.profileId,
+      type: oldJob.type,
+      status: 'pending',
+      priority: oldJob.priority,
+      attempts: oldJob.attempts,          // تلاش مصرف نمی‌شود — تقصیر داده نیست
+      maxRetries: oldJob.maxRetries,
+      nextRetryAt: runAt,
+    },
+  })
+
+  await prisma.job.update({
+    where: { id: taskId },
+    data: {
+      status: 'failed',
+      error: `${label} — ${fmtWait(delayMs)} بعد دوباره اجرا می‌شود (وظیفه جدید: ${newJob.id})`,
+      completedAt: new Date(),
+    },
+  }).catch(() => {})
+
+  if (automationResultId) {
+    await prisma.automationResult.update({
+      where: { id: automationResultId },
+      data: {
+        status: 'failed',
+        resultMessage: `${message} — ${fmtWait(delayMs)} بعد دوباره تلاش می‌شود`,
+        resultType: 'warning',
+        errorCode: 'RATE_LIMITED',
+        finishedAt: new Date(),
+        duration: Date.now() - startedAt,
+      },
+    }).catch(() => {})
+  }
+
+  try {
+    const { automationQueue } = await import('./queue')
+    const profile = oldJob.profileId
+      ? await prisma.registrationProfile.findUnique({
+          where: { id: oldJob.profileId },
+          select: { plateNumber: true, accountId: true },
+        })
+      : null
+
+    await automationQueue.add(
+      'process-waybill',
+      {
+        taskId: newJob.id,
+        plateNumber: profile?.plateNumber || '',
+        accountId: profile?.accountId || '',
+        jobIndex: 0,
+        totalJobs: 1,
+      },
+      { delay: delayMs, priority: oldJob.priority },
+    )
+    await log(taskId, 'warn', `${label}: اجرای بعدی ${fmtWait(delayMs)} دیگر است (${runAt.toLocaleString('fa-IR')})`)
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e)
+    await log(taskId, 'error', `وظیفه جدید ساخته شد ولی به صف اضافه نشد (Redis؟): ${m}`)
+    await prisma.job.update({
+      where: { id: newJob.id },
+      data: { status: 'failed', error: 'به صف اضافه نشد: ' + m, completedAt: new Date() },
+    }).catch(() => {})
+  }
+
+  await prisma.activityLog.create({
+    data: {
+      action: 'task_rate_limited', resource: 'automation', resourceId: taskId,
+      details: { newJobId: newJob.id, delayMs, message: message.slice(0, 300) },
+    },
+  }).catch(() => {})
 }
 
 async function getPairCooldownUntil(accountId: string, plateNumber: string): Promise<Date | null> {
@@ -140,11 +256,10 @@ async function notify(title: string, message: string, type: 'info' | 'success' |
 }
 
 function createOtpCodeProvider(accountId: string, listenAfter: Date, taskId: string) {
-  /* پیامک‌هایی که قبلاً خوانده و «استفاده‌شده» شده‌اند را دنبال می‌کنیم تا
-     در تلاش بعدی همان کد قدیمی برنگردد و در عوض پیامک جدیدتر خوانده شود.
-     (قبلا کد یک بار کش می‌شد و تلاش دوم همیشه همان کد قبلی را می‌گرفت.) */
-  const usedSmsIds = new Set<string>()
+  let cachedCode = ''
+  let cachedSmsId = ''
   return async () => {
+    if (cachedCode) return cachedCode
     const smsList = await prisma.smsMessage.findMany({
       where: {
         accountId,
@@ -156,16 +271,16 @@ function createOtpCodeProvider(accountId: string, listenAfter: Date, taskId: str
     }).catch(() => [])
 
     for (const sms of smsList) {
-      if (usedSmsIds.has(sms.id)) continue
       const code = extractSmsCode(`${sms.rawText || ''} ${sms.resultMessage || ''}`)
       if (!code) continue
-      usedSmsIds.add(sms.id)
+      cachedCode = code
+      cachedSmsId = sms.id
       await prisma.smsMessage.update({
         where: { id: sms.id },
         data: { status: 'used', usedAt: new Date(), resultMessage: `کد ورود برای ثبت نهایی استفاده شد: ${code}` },
       }).catch(() => {})
-      await log(taskId, 'success', `کد پیامکی جدید دریافت شد و برای OTP نهایی استفاده می‌شود: ${code}`)
-      return code
+      await log(taskId, 'success', `کد پیامکی مربوط به حساب دریافت شد و برای OTP نهایی استفاده می‌شود: ${code}`)
+      return cachedCode
     }
     return ''
   }
@@ -194,6 +309,7 @@ export async function processWaybillJob(taskId: string): Promise<void> {
   })
 
   const startedAt = Date.now()
+  let lockedAccountId: string | null = null
 
   try {
     const engine = await getEngine()
@@ -222,6 +338,31 @@ export async function processWaybillJob(taskId: string): Promise<void> {
     }
 
     await log(taskId, 'info', `پروفایل: ${profile.name} | پلاک: ${profile.plateNumber} | حساب: ${account.username}`)
+
+    /* یک اکانت نمی‌تواند دو عملیات همزمان داشته باشد — اگر همین اکانت الان
+       مشغول وظیفه‌ی دیگری است، این وظیفه کمی بعد دوباره امتحان می‌شود تا
+       ظرفیت همزمانی برای اکانت‌های دیگر آزاد بماند. */
+    if (activeAccounts.has(account.id)) {
+      const delayMs = 2 * 60 * 1000 + Math.floor(Math.random() * 60 * 1000)
+      const msg = `اکانت «${account.username}» الان مشغول وظیفه‌ی دیگری است — این وظیفه ${fmtWait(delayMs)} بعد دوباره امتحان می‌شود`
+      await log(taskId, 'warn', msg)
+      await rescheduleForRateLimit(taskId, automationResult.id, msg, delayMs, startedAt, 'اکانت مشغول است')
+      return
+    }
+    activeAccounts.add(account.id)
+    lockedAccountId = account.id
+
+    /* اگر این اکانت به دلیل «محدودیت زمانی ثبت بارنامه شهری» در حالت توقف است،
+       اصلا مرورگر باز نکن — وظیفه را برای بعد از پایان توقف دوباره زمان‌بندی کن
+       تا ظرفیت همزمانی ورکر برای اکانت‌های دیگر آزاد بماند. */
+    const rlUntil = await getRateLimitCooldownUntil(account.id)
+    if (rlUntil && rlUntil.getTime() > Date.now()) {
+      const remaining = rlUntil.getTime() - Date.now()
+      const msg = `این اکانت به دلیل محدودیت زمانی سایت متوقف است — ${fmtWait(remaining)} دیگر دوباره تلاش می‌شود`
+      await log(taskId, 'warn', msg)
+      await rescheduleForRateLimit(taskId, automationResult.id, msg, remaining + 5000, startedAt)
+      return
+    }
 
     // اگر برای همین «اکانت + پلاک» ثبت موفق قبلی داشته‌ایم، قبل از شروع عملیات بعدی ۵ تا ۱۵ دقیقه صبر می‌کنیم.
     const cooldownOk = await waitForPairCooldown(taskId, account.id, profile.plateNumber)
@@ -282,7 +423,6 @@ export async function processWaybillJob(taskId: string): Promise<void> {
       submit: DO_SUBMIT,
       headless: HEADLESS,
       maxRestarts: MAX_RESTARTS,
-      keepOpenOnFinal: KEEP_OPEN_ON_FINAL,
       getOtpCode,
       onLog: (line: string) => {
         const clean = String(line).replace(/^\s*\n/, '').trim()
@@ -416,7 +556,38 @@ export async function processWaybillJob(taskId: string): Promise<void> {
       data: { lastRun: new Date(), totalRuns: { increment: 1 }, failedRuns: { increment: 1 }, lastError: errMsg },
     }).catch(() => {})
 
-    const kind = String(result.kind || 'error')
+    let kind = String(result.kind || 'error')
+    // شبکه‌ی ایمنی: حتی اگر موتور نوع را علامت نزده باشد، از روی متن خطا تشخیص بده
+    if (kind !== 'rate_limited' && /محدودیت زمانی در ثبت بارنامه|امکان ثبت بارنامه را ندارید/.test(errMsg)) {
+      kind = 'rate_limited'
+    }
+
+    /* ─── محدودیت زمانی ثبت بارنامه شهری ───
+       «با توجه به محدودیت زمانی در ثبت بارنامه شهری (باربرگ حقیقی)،
+        در حال حاضر امکان ثبت بارنامه را ندارید. لطفا دقایقی بعد مجددا تلاش نمایید.»
+       این نه خطای داده است نه مشکل حساب — سایت می‌گوید فعلا صبر کن.
+       پس: کل عملیات این اکانت ۳۰ دقیقه متوقف می‌شود و این وظیفه (و هر وظیفه‌ی
+       دیگری از همین اکانت که به اجرا برسد) برای بعد از پایان توقف زمان‌بندی می‌شود. */
+    if (kind === 'rate_limited') {
+      const until = await setRateLimitCooldown(account.id, errMsg)
+      await prisma.automationResult.update({
+        where: { id: automationResult.id },
+        data: {
+          resultType: 'warning',
+          errorCode: 'RATE_LIMITED',
+          resultMessage: `${errMsg} — ${fmtWait(RATE_LIMIT_COOLDOWN_MS)} بعد دوباره تلاش می‌شود`,
+        },
+      }).catch(() => {})
+      await log(taskId, 'warn',
+        `محدودیت زمانی ثبت بارنامه شهری — عملیات اکانت «${account.username}» تا ${until.toLocaleString('fa-IR')} متوقف شد و بعد دوباره تلاش می‌شود`)
+      await notify(
+        'محدودیت زمانی ثبت بارنامه شهری',
+        `حساب «${account.accountName}» (${account.username}) | پلاک ${profile.plateNumber}: ${errMsg} — عملیات این اکانت ${fmtWait(RATE_LIMIT_COOLDOWN_MS)} متوقف شد و خودکار ادامه می‌یابد.`,
+        'warning',
+      )
+      await rescheduleForRateLimit(taskId, null, errMsg, RATE_LIMIT_COOLDOWN_MS, startedAt)
+      return
+    }
 
     /* فقط وقتی تسلیم می‌شویم که موتور واقعا سقف بلندش را خرج کرده باشد.
 
@@ -426,33 +597,26 @@ export async function processWaybillJob(taskId: string): Promise<void> {
        dead / login → مشکل محلی است، تکرار منطقی است */
     const engineExhausted = ['block', 'waf'].includes(kind)
 
-    /* ─── کد یکبارمصرف (OTP) ───
-       از قیف «غیرفعال‌سازی حساب» جدا شد: نرسیدن یا ثبت‌نشدن کد پیامکی
-       لزوماً مشکل حساب نیست (ممکن است پیامک دیر برسد یا اپراتور مشکل
-       داشته باشد). فقط همین وظیفه ناموفق می‌شود و جزئیات ثبت می‌گردد. */
-    if (kind === 'otp_failed') {
-      await log(taskId, 'error', errMsg)
-      await log(taskId, 'warn', 'کد یکبارمصرف کامل نشد — وظیفه ناموفق ثبت شد ولی حساب غیرفعال نشد (ممکن است پیامک دیر رسیده باشد)')
-      await notify('کد یکبارمصرف حساب باربگ ثبت نشد', `پلاک ${profile.plateNumber}: ${errMsg}`, 'warning')
-      await prisma.job.update({ where: { id: taskId }, data: { status: 'failed', error: errMsg, completedAt: new Date() } })
-      await createErrorLog(taskId, errMsg)
-      return
-    }
-
     /* ─── خطاهای قطعی مربوط به خود حساب باربگ ───
        این خطاها با تکرار حل نمی‌شوند. علاوه بر متوقف کردن این وظیفه:
          ۱) حساب غیرفعال می‌شود تا بقیه‌ی وظایف هم بی‌خود تلاش نکنند
          ۲) وظایف در انتظار همین حساب لغو می‌شوند
          ۳) اعلان ساخته می‌شود تا کاربر فورا بفهمد
        نمونه‌ها: رمز اشتباه، حساب قفل/مسدود، محدودیت موقت صدور بارنامه شهری. */
-    if (kind === 'bad_credentials' || kind === 'account_locked' || kind === 'account_restricted') {
+    if (kind === 'bad_credentials' || kind === 'account_locked' || kind === 'account_restricted' || kind === 'otp_failed') {
       const isLocked = kind === 'account_locked'
       const isRestricted = kind === 'account_restricted'
-      const title = isRestricted
-        ? 'حساب باربگ برای صدور بارنامه شهری محدود شده است'
-        : (isLocked ? 'حساب باربگ مسدود است' : 'مشخصات حساب باربگ اشتباه است')
+      const isOtpFailed = kind === 'otp_failed'
+      const title = isOtpFailed
+        ? 'کد یکبارمصرف حساب باربگ ثبت نشد'
+        : (isRestricted
+            ? 'حساب باربگ برای صدور بارنامه شهری محدود شده است'
+            : (isLocked ? 'حساب باربگ مسدود است' : 'مشخصات حساب باربگ اشتباه است'))
 
       await log(taskId, 'error', errMsg)
+      if (isOtpFailed) {
+        await log(taskId, 'error', 'بعد از ۲ تلاش کامل، کد یکبارمصرف دریافت/ثبت نشد؛ عملیات‌های این اکانت متوقف می‌شود')
+      }
       await log(taskId, 'error', `حساب «${account.accountName}» (${account.username}) غیرفعال شد`)
 
       // ۱) حساب را غیرفعال کن
@@ -592,6 +756,9 @@ export async function processWaybillJob(taskId: string): Promise<void> {
         data: { action: 'task_failed', resource: 'automation', resourceId: taskId, details: { error: msg } },
       }).catch(() => {})
     }
+  } finally {
+    // آزاد کردن قفل اکانت — چه موفق چه ناموفق
+    if (lockedAccountId) activeAccounts.delete(lockedAccountId)
   }
 }
 
@@ -608,7 +775,7 @@ async function retryTask(
 
      موتور قبلا ۵ بار (حدود ۱۸ دقیقه) تلاش کرده؛ تکرار زودهنگام
      فقط فشار بی‌فایده روی سایتی است که الان مریض است. */
-  const SITE_DOWN = ['busy', 'timeout', 'block', 'waf'].includes(kind)
+  const SITE_DOWN = ['busy', 'timeout', 'block', 'waf', 'server_popup'].includes(kind)
   const retryIntervals = SITE_DOWN
     ? [10 * 60, 20 * 60, 30 * 60, 45 * 60, 60 * 60]
     : [10, 30, 60, 120, 300]

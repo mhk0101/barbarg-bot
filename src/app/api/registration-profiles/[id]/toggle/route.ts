@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { requirePermission } from '@/lib/auth/permissions'
 
-export async function POST(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guard = await requirePermission(request, 'create_waybill')
+  if (!guard.ok) return guard.response
   try {
     const { id } = await params
     const current = await prisma.registrationProfile.findUnique({

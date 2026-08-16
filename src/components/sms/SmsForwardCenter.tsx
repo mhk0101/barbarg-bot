@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from 'sonner'
-import { MessageSquare, Link2, Copy, RefreshCw, Check, X, Trash2, Loader2 } from 'lucide-react'
+import { MessageSquare, Link2, Copy, RefreshCw, Check, X, Trash2, Loader2, Download } from 'lucide-react'
 
 interface SmsAccount {
   id: string
@@ -116,6 +116,7 @@ export default function SmsForwardCenter() {
   const [messages, setMessages] = useState<SmsMsg[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [bulkBusy, setBulkBusy] = useState(false)
   const [phoneDrafts, setPhoneDrafts] = useState<Record<string, string>>({})
 
   const load = useCallback(async () => {
@@ -162,6 +163,109 @@ export default function SmsForwardCenter() {
     } finally {
       setBusyId(null)
     }
+  }
+
+  /** ساخت گروهی لینک وبهوک برای همه اکانت‌هایی که هنوز لینک ندارند */
+  const generateAllTokens = async () => {
+    setBulkBusy(true)
+    try {
+      const res = await fetch('/api/barbarg-accounts/sms-tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ regenerate: false }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.success) throw new Error(data.error || 'خطا')
+      setAccounts((prev) =>
+        prev.map((a) => {
+          const updated = (data.accounts as SmsAccount[]).find((x) => x.id === a.id)
+          return updated ? { ...a, smsWebhookToken: updated.smsWebhookToken } : a
+        }),
+      )
+      if (data.created > 0) {
+        toast.success(`برای ${data.created} اکانت لینک ساخته شد${data.skipped ? ` (${data.skipped} اکانت از قبل لینک داشتند)` : ''}`)
+      } else {
+        toast.info('همه اکانت‌ها از قبل لینک دارند')
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'خطا در ساخت گروهی لینک‌ها')
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  /** حذف لینک وبهوک یک اکانت */
+  const deleteToken = async (accountId: string) => {
+    if (!confirm('لینک وبهوک این اکانت حذف شود؟ اپ فورواردر روی گوشی دیگر نمی‌تواند به این آدرس پیامک بفرستد.')) return
+    setBusyId(accountId)
+    try {
+      const res = await fetch(`/api/barbarg-accounts/${accountId}/sms-token`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.success) throw new Error(data.error || 'خطا')
+      setAccounts((prev) => prev.map((a) => (a.id === accountId ? { ...a, smsWebhookToken: null } : a)))
+      toast.success('لینک وبهوک حذف شد')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'خطا در حذف لینک')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  /** حذف گروهی لینک وبهوک همه اکانت‌ها */
+  const deleteAllTokens = async () => {
+    const count = accounts.filter((a) => a.smsWebhookToken).length
+    if (count === 0) {
+      toast.info('هیچ اکانتی لینک ندارد')
+      return
+    }
+    if (!confirm(`لینک وبهوک ${count} اکانت حذف شود؟ همه لینک‌های قبلی باطل می‌شوند و اپ‌های فورواردر روی گوشی‌ها از کار می‌افتند.`)) return
+    setBulkBusy(true)
+    try {
+      const res = await fetch('/api/barbarg-accounts/sms-tokens', { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.success) throw new Error(data.error || 'خطا')
+      setAccounts((prev) => prev.map((a) => ({ ...a, smsWebhookToken: null })))
+      toast.success(`لینک ${data.deleted} اکانت حذف شد`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'خطا در حذف گروهی لینک‌ها')
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  /** کپی همه لینک‌ها در کلیپ‌بورد — هر خط: نام اکانت | نام کاربری | لینک */
+  const copyAllLinks = () => {
+    const withToken = accounts.filter((a) => a.smsWebhookToken)
+    if (withToken.length === 0) {
+      toast.error('هیچ اکانتی لینک ندارد — اول «ساخت لینک برای همه» را بزنید')
+      return
+    }
+    const text = withToken
+      .map((a) => `${a.accountName} | ${a.username} | ${webhookUrl(a.smsWebhookToken!)}`)
+      .join('\n')
+    navigator.clipboard.writeText(text)
+    toast.success(`${withToken.length} لینک کپی شد`)
+  }
+
+  /** دانلود فایل متنی همه لینک‌ها */
+  const downloadAllLinks = () => {
+    const withToken = accounts.filter((a) => a.smsWebhookToken)
+    if (withToken.length === 0) {
+      toast.error('هیچ اکانتی لینک ندارد — اول «ساخت لینک برای همه» را بزنید')
+      return
+    }
+    const lines = [
+      'نام اکانت\tنام کاربری\tشماره تلفن\tآدرس وبهوک',
+      ...withToken.map((a) => `${a.accountName}\t${a.username}\t${a.phone || ''}\t${webhookUrl(a.smsWebhookToken!)}`),
+    ]
+    const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const el = document.createElement('a')
+    el.href = url
+    el.download = 'sms-webhook-links.txt'
+    el.click()
+    URL.revokeObjectURL(url)
+    toast.success(`فایل ${withToken.length} لینک دانلود شد`)
   }
 
   const testWebhook = async (account: SmsAccount) => {
@@ -367,6 +471,34 @@ export default function SmsForwardCenter() {
 
         <TabsContent value="webhooks" className="space-y-4 mt-4">
           <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="text-sm text-muted-foreground">
+                  {accounts.filter((a) => a.smsWebhookToken).length} از {accounts.length} اکانت لینک دارند
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Button size="sm" onClick={generateAllTokens} disabled={bulkBusy}>
+                    {bulkBusy ? <Loader2 className="size-4 animate-spin" /> : <Link2 className="size-4" />}
+                    ساخت لینک برای همه
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={copyAllLinks} disabled={bulkBusy}>
+                    <Copy className="size-4" />
+                    کپی همه لینک‌ها
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={downloadAllLinks} disabled={bulkBusy}>
+                    <Download className="size-4" />
+                    دانلود فایل لینک‌ها
+                  </Button>
+                  <Button size="sm" variant="destructive" onClick={deleteAllTokens} disabled={bulkBusy}>
+                    {bulkBusy ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                    حذف همه لینک‌ها
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
             <CardHeader><CardTitle>راهنما</CardTitle></CardHeader>
             <CardContent className="text-sm text-muted-foreground space-y-1">
               <p>۱. برای هر حساب یک آدرس وبهوک بساز و روی گوشی‌ای که پیامک‌های همان حساب را دریافت می‌کند، اپ فورواردر SMS را طوری تنظیم کن که به این آدرس POST بزند.</p>
@@ -394,7 +526,7 @@ export default function SmsForwardCenter() {
                     <div className="flex items-center gap-2">
                       <Input
                         placeholder="شماره تلفن دریافت‌کننده پیامک"
-                        defaultValue={a.phone || ''}
+                        value={phoneDrafts[a.id] ?? a.phone ?? ''}
                         onChange={(e) => setPhoneDrafts((p) => ({ ...p, [a.id]: e.target.value }))}
                         className="max-w-xs"
                       />
@@ -410,6 +542,9 @@ export default function SmsForwardCenter() {
                           </Button>
                           <Button size="icon" variant="outline" onClick={() => generateToken(a.id)} disabled={busyId === a.id} title="ساخت آدرس جدید">
                             {busyId === a.id ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                          </Button>
+                          <Button size="icon" variant="outline" className="text-destructive hover:text-destructive" onClick={() => deleteToken(a.id)} disabled={busyId === a.id} title="حذف لینک وبهوک">
+                            <Trash2 className="size-4" />
                           </Button>
                         </>
                       ) : (

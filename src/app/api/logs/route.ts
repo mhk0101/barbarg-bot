@@ -1,14 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/auth/permissions'
 
 const logs: Array<{ id: string; action: string; resource: string; details: Record<string, unknown>; timestamp: string }> = []
 
 export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'view_logs')
+  if (!guard.ok) return guard.response
   const { searchParams } = new URL(request.url)
   const limit = parseInt(searchParams.get('limit') || '100')
   return NextResponse.json({ data: logs.slice(0, limit) })
 }
 
 export async function POST(request: NextRequest) {
+  const guard = await requirePermission(request, 'view_logs')
+  if (!guard.ok) return guard.response
   try {
     const body = await request.json()
     const entry = { id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ...body, timestamp: new Date().toISOString() }

@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { requirePermission } from '@/lib/auth/permissions'
 import { automationQueue } from '../../../../worker/queue'
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
   try {
     const now = new Date()
     const profiles = await prisma.registrationProfile.findMany({
@@ -32,6 +35,8 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
   try {
     const body = await request.json()
     const { action } = body

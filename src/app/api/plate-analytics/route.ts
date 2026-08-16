@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { requirePermission } from '@/lib/auth/permissions'
 
 interface PlateRow {
   plateNumber: string
@@ -26,6 +27,8 @@ interface MessageRow {
 }
 
 export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'view_reports')
+  if (!guard.ok) return guard.response
   try {
     const searchParams = request.nextUrl.searchParams
     const dateFrom = searchParams.get('dateFrom')

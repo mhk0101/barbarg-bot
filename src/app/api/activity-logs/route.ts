@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { requirePermission } from '@/lib/auth/permissions'
 
 export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'view_logs')
+  if (!guard.ok) return guard.response
   try {
     const { searchParams } = new URL(request.url)
     const level = searchParams.get('level')

@@ -22,3 +22,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: e instanceof Error ? e.message : 'خطا' }, { status: 500 })
   }
 }
+
+// حذف آدرس وبهوک یک اکانت — لینک قبلی بلافاصله از کار می‌افتد
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
+
+  try {
+    const { id } = await params
+    const account = await prisma.barBargAccount.update({
+      where: { id },
+      data: { smsWebhookToken: null },
+      select: { id: true, smsWebhookToken: true },
+    })
+    await prisma.activityLog.create({
+      data: { action: 'sms_token_deleted', resource: 'barbarg_account', resourceId: id, details: {} },
+    }).catch(() => {})
+    return NextResponse.json({ success: true, ...account })
+  } catch (e: unknown) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : 'خطا' }, { status: 500 })
+  }
+}

@@ -172,6 +172,29 @@ async function gotoR(page, url, label, max = 20) {
   return false
 }
 
+/**
+ * پایش فعال بلاک IP — هر لحظه که صدا زده شود یک درخواست سبک به سایت می‌زند.
+ *
+ * چرا لازم است؟ گرفتن بلاک فقط هنگام goto کافی نیست: اگر IP «وسط» عملیات
+ * (حل کپچا، کلیک ورود، پر کردن گام‌ها) بلاک شود، صفحه‌ی قبلی هنوز در مرورگر
+ * لود است و هیچ خطای ناوبری پرتاب نمی‌شود — موتور بی‌خبر می‌ماند و بی‌فایده
+ * تکرار می‌کند. این تابع مستقل از DOM، اتصال واقعی به سایت را می‌سنجد.
+ *
+ * خروجی: true یعنی اتصال به سایت الان برقرار نیست (احتمال بلاک IP).
+ */
+async function probeIpBlock(page, timeoutMs = 15000) {
+  try {
+    const res = await page.request.get(LOGIN_URL, { timeout: timeoutMs })
+    const st = res.status()
+    return !(st > 0)   // هر پاسخ HTTP (حتی 4xx/5xx) یعنی اتصال هنوز هست
+  } catch (e) {
+    const msg = String((e && e.message) || e)
+    // مرورگر بسته شده — مسئله‌ی دیگری است، بلاک نیست
+    if (/Target page, context or browser has been closed|Target closed|Session closed/i.test(msg)) return false
+    return isBlock(e) || /Timeout .* exceeded/i.test(msg)
+  }
+}
+
 // ---- template matching for Persian captcha ----
 async function classifyTemplate(page) {
   return page.evaluate((sel) => {
@@ -1763,6 +1786,9 @@ async function fillFareStep(page, fare, OUT, tag, verbose = true) {
     }
 
     if (swal) log(`   ✖ خطای سایت: ${swal}`)
+    /* خطای «محدودیت زمانی در ثبت بارنامه شهری» را همین‌جا پرتاب کن تا
+       نوع rate_limited تشخیص داده شود و وظیفه ۳۰ دقیقه بعد دوباره اجرا شود */
+    if (swal && RATE_LIMIT_RE.test(swal)) throw new Error(cleanSiteErrorMessage(swal))
     break
   }
 
@@ -1783,52 +1809,25 @@ async function fillFareStep(page, fare, OUT, tag, verbose = true) {
 
 
 /* ── OTP نهایی سایت، بعد از کلیک ثبت نهایی ── */
-
-/** شناسه‌های احتمالی مودال OTP — سایت گاهی شناسه/ساختار را عوض می‌کند */
-const OTP_MODAL_IDS = ['GetOptCodeModal', 'GetOtpCodeModal', 'OtpModal', 'otpModal', 'getOptCodeModal', 'SendOtpCodeModal']
-
 async function isOtpModalVisible(page) {
-  return page.evaluate((ids) => {
-    // ۱) مودال‌های شناخته‌شده
-    for (const id of ids) {
-      const m = document.getElementById(id)
-      if (!m) continue
-      const st = window.getComputedStyle(m)
-      if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') continue
-      const r = m.getBoundingClientRect()
-      if (r.width > 0 && r.height > 0) return true
-    }
-    // ۲) پشتیبان: هر باکس OTP نمایان (اگر ساختار مودال عوض شده باشد)
-    const boxes = Array.from(document.querySelectorAll('input.otp-box, input.otp-input, input.otp-code, input[data-otp]')).filter((b) => b.type !== 'hidden')
-    for (const b of boxes) {
-      const st = window.getComputedStyle(b)
-      if (st.display === 'none' || st.visibility === 'hidden') continue
-      const r = b.getBoundingClientRect()
-      if (r.width > 0 && r.height > 0) return true
-    }
-    return false
-  }, OTP_MODAL_IDS).catch(() => false)
+  return page.evaluate(() => {
+    const m = document.getElementById('GetOptCodeModal')
+    if (!m) return false
+    const st = window.getComputedStyle(m)
+    return st.display !== 'none' && st.visibility !== 'hidden' && m.classList.contains('show')
+  }).catch(() => false)
 }
 
-/**
- * کد OTP را در باکس‌های مودال می‌ریزد و دکمه ثبت را می‌زند.
- * خروجی: { ok, reason?, boxes? }
- */
 async function fillFinalOtpModal(page, code, verbose = true) {
   const log = (m) => { if (verbose) console.log(m) }
   const otp = String(code || '').replace(/\D/g, '').slice(0, 6)
-  if (otp.length !== 6) return { ok: false, reason: 'کد ۶ رقمی نیست' }
+  if (otp.length !== 6) return false
 
-  const filled = await page.evaluate((otp) => {
-    const modal = OTP_MODAL_IDS.map((id) => document.getElementById(id)).find(Boolean)
-    const scope = modal || document
-    let boxes = Array.from(scope.querySelectorAll('input.otp-box, input.otp-input, input.otp-code, input[data-otp]')).filter((el) => el.type !== 'hidden' && el.id !== 'otp')
-    if (!boxes.length) {
-      // پشتیبان: ورودی‌های عددی تک‌کاراکتری
-      boxes = Array.from(scope.querySelectorAll('input[inputmode="numeric"][maxlength="1"], input[maxlength="1"][type="tel"], input[maxlength="1"][type="text"]')).slice(0, 6)
-    }
-    if (boxes.length < 6) return { ok: false, reason: `فقط ${boxes.length} باکس OTP پیدا شد` }
-    boxes = boxes.slice(0, 6)
+  const ok = await page.evaluate((otp) => {
+    const modal = document.getElementById('GetOptCodeModal')
+    if (!modal) return false
+    const boxes = Array.from(modal.querySelectorAll('input.otp-box'))
+    if (boxes.length < 6) return false
     for (let i = 0; i < 6; i++) {
       const el = boxes[i]
       el.value = otp[i]
@@ -1836,103 +1835,47 @@ async function fillFinalOtpModal(page, code, verbose = true) {
       el.dispatchEvent(new Event('change', { bubbles: true }))
       el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: otp[i] }))
     }
-    const hidden = document.getElementById('otp') || (modal && modal.querySelector('input[name="otp"]'))
+    const hidden = document.getElementById('otp') || modal.querySelector('input[name="otp"]')
     if (hidden) {
       hidden.value = otp
       hidden.dispatchEvent(new Event('input', { bubbles: true }))
       hidden.dispatchEvent(new Event('change', { bubbles: true }))
     }
-    return { ok: true, boxes: boxes.length }
-  }, otp).catch(() => ({ ok: false, reason: 'خطا در پر کردن باکس‌های OTP' }))
-
-  if (!filled.ok) return filled
-  log(`   ✔ کد پیامکی ${otp} در ${filled.boxes} باکس OTP وارد شد`)
-
-  await page.waitForTimeout(300)
-  const clicked = await page.evaluate(() => {
-    const b = document.getElementById('submitOtp')
-    if (!b) return false
-    b.click()
     return true
-  }).catch(() => false)
-  if (!clicked) return { ok: false, reason: 'دکمه ثبت OTP (#submitOtp) پیدا نشد', boxes: filled.boxes }
+  }, otp).catch(() => false)
+
+  if (!ok) return false
+  log(`   ✔ کد پیامکی ${otp} در پنجره OTP وارد شد`)
+  await page.waitForTimeout(300)
+  await page.click('#submitOtp').catch(async () => {
+    await page.evaluate(() => document.getElementById('submitOtp')?.click()).catch(() => {})
+  })
   log('   ➜ دکمه ثبت OTP کلیک شد')
-  return { ok: true, boxes: filled.boxes }
+  await page.waitForTimeout(1500)
+  return true
 }
 
-/**
- * منتظر کد پیامکی می‌ماند، در مودال می‌ریزد، ثبت می‌کند و **تایید می‌کند
- * که مودال واقعا بسته شده**. خروجی: { ok, reason?, codeReceived?, code? }
- */
 async function waitAndSubmitFinalOtp(page, getOtpCode, timeoutMs = 60_000, verbose = true) {
   const log = (m) => { if (verbose) console.log(m) }
   if (typeof getOtpCode !== 'function') {
     log('   ✖ پنجره OTP باز شد ولی منبع دریافت کد پیامکی تعریف نشده است')
-    return { ok: false, reason: 'منبع دریافت کد پیامکی تعریف نشده است', codeReceived: false }
+    return false
   }
 
   const started = Date.now()
-  log(`   🔐 پنجره کد پیامکی نمایش داده شد؛ تا ${Math.round(timeoutMs / 1000)} ثانیه منتظر پیامک همان حساب می‌مانم...`)
+  log('   🔐 پنجره کد پیامکی نمایش داده شد؛ تا ۱ دقیقه منتظر پیامک همان حساب می‌مانم...')
   let lastCode = ''
   while (Date.now() - started < timeoutMs) {
     let code = ''
     try { code = String(await getOtpCode() || '').replace(/\D/g, '').slice(0, 6) } catch (e) { code = '' }
     if (code && code !== lastCode) {
       lastCode = code
-      if (code.length === 6) {
-        log(`   📩 کد پیامکی دریافت شد: ${code}`)
-        const r = await fillFinalOtpModal(page, code, verbose)
-        if (!r.ok) return { ok: false, reason: r.reason, codeReceived: true, code }
-
-        // تایید: صبر کن ببینیم مودال بسته می‌شود و خطایی نمی‌آید
-        let closed = false
-        for (let k = 0; k < 24; k++) {
-          await page.waitForTimeout(500)
-          const sw = await readSwalError(page)
-          if (sw) {
-            log(`   ✖ خطای سایت پس از ثبت OTP: ${sw}`)
-            return { ok: false, reason: `خطای سایت پس از ثبت OTP: ${sw}`, codeReceived: true, code }
-          }
-          if (!(await isOtpModalVisible(page))) { closed = true; break }
-        }
-        if (closed) {
-          log('   ✔ پنجره OTP بسته شد')
-          return { ok: true, codeReceived: true, code }
-        }
-        log('   ⚠ پنجره OTP هنوز باز است — کد پذیرفته نشد')
-        return { ok: false, reason: 'کد وارد شد ولی پنجره OTP بسته نشد (کد اشتباه یا خطای سرور)', codeReceived: true, code }
-      }
+      if (code.length === 6) return fillFinalOtpModal(page, code, verbose)
     }
     await page.waitForTimeout(3000)
   }
-  log(`   ✖ در مهلت ${Math.round(timeoutMs / 1000)} ثانیه‌ای، کد پیامکی مربوط به این حساب دریافت نشد`)
-  return { ok: false, reason: `در مهلت ${Math.round(timeoutMs / 1000)} ثانیه‌ای کد پیامکی دریافت نشد`, codeReceived: false }
-}
-
-/** وضعیت فعلی صفحه در گام آخر — برای گزارش جزئیات ناموفق */
-async function readFinalStateDetail(page) {
-  return page.evaluate(() => {
-    const g = (id) => {
-      const el = document.getElementById(id)
-      return el ? String((el.value ?? el.textContent) || '').trim() : ''
-    }
-    const otpOpen = (() => {
-      const m = document.getElementById('GetOptCodeModal') || document.getElementById('GetOtpCodeModal') || document.getElementById('OtpModal')
-      if (!m) return false
-      const st = window.getComputedStyle(m)
-      return st.display !== 'none' && st.visibility !== 'hidden'
-    })()
-    const swal = (() => {
-      const p = document.querySelector('.swal2-popup.swal2-icon-error')
-      return p && p.offsetParent !== null ? (document.getElementById('swal2-html-container')?.textContent || '').trim() : ''
-    })()
-    return [
-      `کد رهگیری: «${g('TrackingCodeNumber') || 'خالی'}»`,
-      `صفحه رسید: ${document.getElementById('trackingcode') ? 'هست' : 'نیست'}`,
-      `پنجره OTP: ${otpOpen ? 'باز' : 'بسته'}`,
-      swal ? `پاپ‌آپ خطا: «${swal}»` : '',
-    ].filter(Boolean).join(' | ')
-  }).catch(() => 'قابل خواندن نبود')
+  log('   ✖ در مهلت ۱ دقیقه‌ای، کد پیامکی مربوط به این حساب دریافت نشد')
+  return false
 }
 
 /* ═══════════ گام ۹: تایید + کپچا + ثبت نهایی ═══════════ */
@@ -1990,67 +1933,26 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
   let code = ''
   let swalErr = ''
   let finalSuccess = null
-  let otpSeen = false        // آیا در این گام اصلا مودال OTP دیده شد؟
-  let otpCompleted = false   // آیا OTP با موفقیت ثبت و مودالش بسته شد؟
-  let otpAttempts = 0        // چند بار تلاش کردیم OTP را کامل کنیم
-  let otpDetail = ''         // جزئیات آخرین تلاش OTP (برای گزارش)
-  const MAX_OTP_ATTEMPTS = 2 // بعد از ۲ تلاش ناکام → ناموفق (otp_failed)
-  const OTP_GRACE_MS = 6000  // بعد از دیدن رسید، چند لحظه برای ظهور OTP صبر کن
-  let receiptSeenAt = 0
-
-  for (let i = 0; i < 120; i++) {
-    // ── ۱) همیشه اول چک کن: مودال OTP باز است؟ ──
-    //      سایت بعضی وقتا کد می‌خواهد بعضی وقتا نه؛ پس در هر تکرار بپاییم.
-    if (await isOtpModalVisible(page)) {
-      otpSeen = true
-      if (otpAttempts >= MAX_OTP_ATTEMPTS) {
-        const detail = await readFinalStateDetail(page)
+  let otpHandled = false
+  for (let i = 0; i < 90; i++) {
+    if (!otpHandled && await isOtpModalVisible(page)) {
+      otpHandled = true
+      const okOtp = await waitAndSubmitFinalOtp(page, getOtpCode, 60_000, verbose)
+      if (!okOtp) {
         await page.screenshot({ path: path.join(OUT, `${tag}-otp-failed.png`), fullPage: true }).catch(() => {})
         return {
           success: false,
           kind: 'otp_failed',
-          error: `کد یکبارمصرف پیامکی پس از ${MAX_OTP_ATTEMPTS} تلاش کامل نشد. ${otpDetail} | وضعیت صفحه: ${detail}`,
+          error: 'کد یکبارمصرف پیامکی دریافت نشد یا در پنجره OTP ثبت نشد',
         }
       }
-      otpAttempts++
-      log(`   🔐 پنجره کد یکبارمصرف باز است — تلاش ${otpAttempts}/${MAX_OTP_ATTEMPTS}`)
-      const r = await waitAndSubmitFinalOtp(page, getOtpCode, 60_000, verbose)
-      if (r.ok) {
-        otpCompleted = true
-        otpDetail = `OTP در تلاش ${otpAttempts} با موفقیت ثبت و پنجره بسته شد`
-        log(`   ✔ ${otpDetail}`)
-        // بعد از OTP، منتظر کد رهگیری/رسید می‌مانیم — حلقه ادامه دارد
-        continue
-      }
-      otpDetail = `تلاش ${otpAttempts}/${MAX_OTP_ATTEMPTS} ناموفق: ${r.reason}${r.codeReceived ? ' (کد پیامکی دریافت شد ولی ثبت نشد)' : ' (کد پیامکی دریافت نشد)'}`
-      log(`   ✖ ${otpDetail}`)
-      await page.screenshot({ path: path.join(OUT, `${tag}-otp-failed-${otpAttempts}.png`), fullPage: true }).catch(() => {})
-
-      if (otpAttempts >= MAX_OTP_ATTEMPTS) {
-        const detail = await readFinalStateDetail(page)
-        return {
-          success: false,
-          kind: 'otp_failed',
-          error: `کد یکبارمصرف پیامکی پس از ${MAX_OTP_ATTEMPTS} تلاش کامل نشد. ${otpDetail} | وضعیت صفحه: ${detail}`,
-        }
-      }
-      // تلاش بعدی: مودال را ببند (اگر باز مانده) و دوباره درخواست ثبت نهایی بزن
-      await page.evaluate(() => {
-        const b = document.querySelector('#GetOptCodeModal .close, #GetOptCodeModal [data-bs-dismiss="modal"], .swal2-popup .swal2-confirm')
-        if (b) b.click()
-      }).catch(() => {})
-      await page.waitForTimeout(1500)
-      await page.click('#btnRegisterFinished').catch(() => {})
-      await page.waitForTimeout(2500)
-      continue
     }
 
-    // ── ۲) وضعیت رسید / کد رهگیری ──
     const st = await page.evaluate(() => {
       const code = (document.getElementById('TrackingCodeNumber') || {}).value || ''
       const box = document.getElementById('trackingcode')
       const text = (box ? box.innerText : document.body.innerText || '').replace(/\s+/g, ' ').trim()
-      const receipt = !!(
+      const success = !!(
         box &&
         /سند حمل بار/.test(text) &&
         /صادر گردید/.test(text) &&
@@ -2060,30 +1962,17 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
       )
       return {
         code: String(code || '').trim(),
-        receipt,
-        text: receipt ? text.slice(0, 500) : '',
+        success,
+        text: success ? text.slice(0, 500) : '',
         plate: (document.getElementById('pelakFinal') || {}).textContent || '',
         origin: (document.getElementById('OrginFinal') || {}).textContent || '',
         dest: (document.getElementById('DestFinal') || {}).textContent || '',
       }
-    }).catch(() => ({ code: '', receipt: false, text: '', plate: '', origin: '', dest: '' }))
+    }).catch(() => ({ code: '', success: false, text: '', plate: '', origin: '', dest: '' }))
 
     code = st.code || ''
-    if (st.receipt && !receiptSeenAt) {
-      receiptSeenAt = Date.now()
-      log('   ⓘ صفحه رسید دیده شد — چند لحظه صبر می‌کنیم تا مطمئن شویم OTP لازم نیست...')
-    }
-    if (st.receipt) finalSuccess = st
-
-    // ── ۳) تعیین نتیجه نهایی ──
-    if (code) break // کد رهگیری آمد → قطعا موفق
-
-    if (finalSuccess && !otpSeen && receiptSeenAt && Date.now() - receiptSeenAt > OTP_GRACE_MS) {
-      // رسید بود و در مهلتِ چند ثانیه‌ای هیچ OTP نیامد → موفق
-      break
-    }
-    if (finalSuccess && otpSeen && otpCompleted) break // OTP هم ثبت شد و رسید هم هست
-
+    if (st.success) finalSuccess = st
+    if (code || finalSuccess) break
     swalErr = await readSwalError(page)
     if (swalErr) break
     await page.waitForTimeout(500)
@@ -2091,10 +1980,16 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
 
   if (swalErr) {
     const cleanErr = cleanSiteErrorMessage(swalErr)
-    const accountRestricted = isAccountRestrictedError(swalErr) || isAccountRestrictedError(cleanErr)
+    const rateLimited = isRateLimitError(swalErr) || isRateLimitError(cleanErr)
+    const accountRestricted = !rateLimited && (isAccountRestrictedError(swalErr) || isAccountRestrictedError(cleanErr))
     const permanent = accountRestricted || /مختصات انتخابی نامعتبر|کد ملی|کدملی|شناسه ملی|اعتبار کافی|موجودی|تکراری|مجوز|دسترسی ندارید/.test(cleanErr)
     log(`\n   ✖ خطای سایت هنگام ثبت نهایی:`)
     log(`      ${cleanErr}`)
+    if (rateLimited) {
+      log('   ⏸ محدودیت زمانی ثبت بارنامه شهری — این اکانت/پلاک باید ۳۰ دقیقه صبر کند؛ وظیفه برای نیم ساعت بعد زمان‌بندی می‌شود')
+      await page.screenshot({ path: path.join(OUT, `${tag}-ratelimit.png`), fullPage: true }).catch(() => {})
+      return { success: false, kind: 'rate_limited', error: cleanErr }
+    }
     if (accountRestricted) {
       log('   🛑 حساب برای صدور بارنامه شهری محدود/مسدود شده است — همه عملیات‌های این اکانت متوقف می‌شود')
     } else if (permanent) {
@@ -2117,16 +2012,6 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
   }
 
   if (finalSuccess) {
-    if (otpSeen && !otpCompleted) {
-      // رسید نمایش داده شد ولی OTP خواسته شد و کامل نشد → ناموفق
-      const detail = await readFinalStateDetail(page)
-      await page.screenshot({ path: path.join(OUT, `${tag}-otp-incomplete.png`), fullPage: true }).catch(() => {})
-      return {
-        success: false,
-        kind: 'otp_failed',
-        error: `صفحه رسید نمایش داده شد ولی کد یکبارمصرف کامل نشد. ${otpDetail || 'OTP لازم بود ولی ثبت نشد'} | وضعیت صفحه: ${detail}`,
-      }
-    }
     log('\n   🎉 بارنامه با موفقیت ثبت شد — صفحه «سند حمل صادر گردید» نمایش داده شد')
     const plate = String(finalSuccess.plate || '').trim()
     const origin = String(finalSuccess.origin || '').trim()
@@ -2135,16 +2020,6 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
     log('      کد رهگیری در فیلد TrackingCodeNumber خوانده نشد، اما رسید نهایی سایت تایید شد.')
     await page.screenshot({ path: path.join(OUT, `${tag}-receipt.png`), fullPage: true }).catch(() => {})
     return { success: true, trackingCode: '', finalReceipt: true }
-  }
-
-  if (otpSeen && !otpCompleted) {
-    const detail = await readFinalStateDetail(page)
-    await page.screenshot({ path: path.join(OUT, `${tag}-otp-incomplete.png`), fullPage: true }).catch(() => {})
-    return {
-      success: false,
-      kind: 'otp_failed',
-      error: `کد یکبارمصرف کامل نشد. ${otpDetail || 'OTP لازم بود ولی ثبت نشد'} | وضعیت صفحه: ${detail}`,
-    }
   }
 
   log('   ✖ نه کد رهگیری دریافت شد و نه صفحه رسید نهایی دیده شد:')
@@ -2156,8 +2031,6 @@ async function finalConfirmStep(page, OUT, tag, opts = {}) {
     return Array.from(new Set(o)).slice(0, 8)
   }).catch(() => [])
   errs.forEach(e => log('      • ' + e))
-  const detailNow = await readFinalStateDetail(page)
-  if (detailNow) log(`      وضعیت: ${detailNow}`)
   await page.screenshot({ path: path.join(OUT, `${tag}-error.png`), fullPage: true }).catch(() => {})
   return false
 }
@@ -2486,8 +2359,18 @@ const PAGE_DEAD_RE = /Target page, context or browser has been closed|Target clo
 /** خطاهای موقتی سرور/ارتباط داخلی سایت */
 const SERVER_TEMP_RE = /Service Unavailable|service is unavailable|temporarily unavailable|خطا در برقراری ارتباط با سرور|قادر به پاسخگویی|سرور در حال حاضر|چند دقیقه دیگر مجدد|HTTP status code.*400|Status:\s*400/i
 
+/** پاپ‌آپ‌های خطای سرور که یعنی «مرورگر را ببند، ۱ تا ۲ دقیقه صبر کن، از اول شروع کن»:
+      • «خطا در پردازش درخواست»
+      • «The HTTP status code of the response was not expected (503)»  */
+const SERVER_POPUP_RE = /خطا در پردازش درخواست|was not expected\s*\(50[0-9]\)|Status:\s*50[0-9]\b|HTTP status code[\s\S]{0,80}50[0-9]/i
+const isServerPopupError = (e) => /SERVER_POPUP/i.test(String((e && e.message) || e)) || SERVER_POPUP_RE.test(String((e && e.message) || e))
+
 /** خطای محدودیت/مسدودی موقت حساب در صدور بارنامه شهری */
 const ACCOUNT_RESTRICTED_RE = /صدور غیر مجاز بارنامه شهری|محدودیت در صدور بارنامه شهری|لیست سیاه سامانه|لیست سیاه|resultCode[\"']?\s*[:=]\s*9990|کد.*9990/i
+
+/** خطای «محدودیت زمانی در ثبت بارنامه شهری» — سایت می‌گوید الان نمی‌شود، دقایقی بعد دوباره تلاش کنید.
+    این خطا نه دائمی است نه مشکل حساب؛ فقط باید برای همین اکانت/پلاک ~۳۰ دقیقه صبر کرد. */
+const RATE_LIMIT_RE = /محدودیت زمانی در ثبت بارنامه|محدودیت زمانی.*بارنامه شهری|امکان ثبت بارنامه را ندارید/i
 
 /** خطای دائمی — تکرار بی‌فایده است */
 const PERMANENT_RE = /مختصات انتخابی نامعتبر|کد ملی|کدملی|شناسه ملی|اعتبار کافی|موجودی|تکراری|مجوز|دسترسی ندارید|رمز|کلمه عبور|کاربری یافت نشد|نام کاربری|قفل|مسدود|غیرفعال|صدور غیر مجاز بارنامه شهری|محدودیت در صدور بارنامه شهری|لیست سیاه سامانه|لیست سیاه/
@@ -2495,6 +2378,7 @@ const PERMANENT_RE = /مختصات انتخابی نامعتبر|کد ملی|ک�
 const isNetBlockError  = (e) => NET_BLOCK_RE.test(String((e && e.message) || e))
 const isPageDeadError  = (e) => PAGE_DEAD_RE.test(String((e && e.message) || e))
 const isAccountRestrictedError = (e) => ACCOUNT_RESTRICTED_RE.test(String((e && e.message) || e))
+const isRateLimitError = (e) => RATE_LIMIT_RE.test(String((e && e.message) || e))
 const isServerTempError = (e) => SERVER_TEMP_RE.test(String((e && e.message) || e))
 const isPermanentError = (e) => PERMANENT_RE.test(String((e && e.message) || e))
 
@@ -2971,7 +2855,6 @@ async function runWaybillOnce(opts) {
   const {
     credentials, data, submit = false, headless = false,
     onLog = null, onStep = null, keepOpenMs = 0, closeBrowser = true,
-    keepOpenOnFinal = false,
   } = opts
 
   if (onLog) setLogSink(onLog)
@@ -2979,6 +2862,9 @@ async function runWaybillOnce(opts) {
 
   const step = async (n, ok, label) => {
     if (onStep) { try { await onStep(n, ok, label) } catch (e) {} }
+    /* بین گام‌ها هم بلاک شدن IP را چک کن — اگر پایش مداوم بلاک دیده،
+       ادامه دادن گام‌های بعدی بی‌فایده است */
+    assertNotBlocked()
     return ok
   }
 
@@ -3012,7 +2898,90 @@ async function runWaybillOnce(opts) {
     }
   }
 
+  /* ── پایش «مداوم» بلاک IP در تمام طول عملیات ──
+     قبلا بلاک فقط هنگام باز کردن صفحه (goto) تشخیص داده می‌شد؛ اگر IP
+     وسط کار (حل کپچا، ورود، پر کردن گام‌ها) بلاک می‌شد، صفحه‌ی قبلی هنوز
+     در مرورگر لود بود و موتور بی‌خبر می‌ماند. حالا هر ۲۰ ثانیه یک درخواست
+     سبک به سایت زده می‌شود؛ ۲ شکست پشت سر هم ⇒ بلاک وسط عملیات. */
+  let ipBlocked = false
+  let ipProbeFails = 0
+  let ipProbeBusy = false
+  const ipWatchdog = setInterval(async () => {
+    if (ipProbeBusy || ipBlocked) return
+    /* مرورگر ممکن است وسط کار (سرور مشغول/تایم‌اوت) بسته و دوباره باز شود؛
+       چون page و browser متغیر let هستند، همیشه نمونه‌ی فعلی چک می‌شود.
+       اگر الان صفحه‌ای باز نیست، فقط این دور را رد کن — پایش ادامه دارد. */
+    try {
+      if (page.isClosed() || !browser.isConnected()) return
+    } catch { return }
+    ipProbeBusy = true
+    try {
+      const bad = await probeIpBlock(page)
+      if (bad) {
+        ipProbeFails++
+        console.log(`   ⚠ پایش بلاک IP: اتصال به سایت جواب نداد (${ipProbeFails}/2)`)
+        if (ipProbeFails >= 2) {
+          ipBlocked = true
+          console.log('   ⚠ پایش مداوم: اتصال به سایت قطع شد — احتمال بلاک IP وسط عملیات')
+        }
+      } else if (ipProbeFails > 0) {
+        ipProbeFails = 0
+      }
+    } catch { /* پایش نباید خود عملیات را خراب کند */ }
+    finally { ipProbeBusy = false }
+  }, 20000)
+  // تایمر پایش نباید مانع خروج پروسه شود (مثلا در اجرای CLI)
+  if (typeof ipWatchdog.unref === 'function') ipWatchdog.unref()
+
+  /* ── پایش «مداوم» پاپ‌آپ‌های خطای سرور ──
+     پاپ‌آپ‌هایی مثل «خطا در پردازش درخواست» یا
+     «The HTTP status code of the response was not expected (503)»
+     از نوع toast هستند و فقط ~۵ ثانیه روی صفحه می‌مانند؛ اگر فقط در
+     لحظه‌های خاص چک کنیم از دست می‌روند. این پایشگر هر ۲ ثانیه
+     پاپ‌آپ خطای قابل‌مشاهده را می‌خواند؛ به محض دیدن یکی از این دو خطا،
+     عملیات باید مرورگر را ببندد، ۱ تا ۲ دقیقه صبر کند و از اول شروع کند. */
+  let serverPopupMsg = ''
+  let popupProbeBusy = false
+  const popupWatchdog = setInterval(async () => {
+    if (popupProbeBusy || serverPopupMsg || ipBlocked) return
+    try {
+      if (page.isClosed() || !browser.isConnected()) return
+    } catch { return }
+    popupProbeBusy = true
+    try {
+      const txt = await page.evaluate(() => {
+        const pop = document.querySelector('.swal2-popup.swal2-icon-error, .swal2-popup.swal2-toast.swal2-icon-error')
+        if (!pop) return ''
+        const st = window.getComputedStyle(pop)
+        if (st.display === 'none' || st.visibility === 'hidden') return ''
+        const b = (document.getElementById('swal2-html-container')?.textContent || '').trim()
+        const h = (document.getElementById('swal2-title')?.textContent || '').trim()
+        return `${h} ${b}`.replace(/\s+/g, ' ').trim().slice(0, 300)
+      }).catch(() => '')
+      if (txt && SERVER_POPUP_RE.test(txt)) {
+        serverPopupMsg = txt
+        console.log(`   ⚠ پایش مداوم: پاپ‌آپ خطای سرور دیده شد: «${txt.slice(0, 120)}»`)
+        console.log('      مرورگر بسته می‌شود، ۱ تا ۲ دقیقه صبر و شروع از اول')
+      }
+    } catch { /* پایش نباید خود عملیات را خراب کند */ }
+    finally { popupProbeBusy = false }
+  }, 2000)
+  if (typeof popupWatchdog.unref === 'function') popupWatchdog.unref()
+
+  const stopIpWatchdog = () => { clearInterval(ipWatchdog); clearInterval(popupWatchdog) }
+  /** اگر پایش مداوم بلاک یا پاپ‌آپ خطای سرور را دیده، خطا پرتاب کن تا
+      مسیر استاندارد (بستن مرورگر + صبر + شروع از صفر) طی شود */
+  const assertNotBlocked = () => {
+    if (ipBlocked) {
+      throw new Error('ERR_CONNECTION_CLOSED: پایش مداوم تشخیص داد اتصال به سایت قطع شده (احتمال بلاک IP وسط عملیات)')
+    }
+    if (serverPopupMsg) {
+      throw new Error(`SERVER_POPUP: ${serverPopupMsg}`)
+    }
+  }
+
   const fail = async (error, kind = 'error') => {
+    stopIpWatchdog()
     if (closeBrowser) await browser.close().catch(() => {})
     return { success: false, error, kind, steps: [], trackingCode: null }
   }
@@ -3074,6 +3043,10 @@ async function runWaybillOnce(opts) {
   let loginFatalKind = null   // 'bad_credentials' یا 'account_locked'
   let failedWithGoodCaptcha = 0
   for (let att = 1; att <= 6; att++) {
+    // اگر پایش مداوم دیده که IP وسط تلاش‌های ورود بلاک شده، ادامه نده
+    if (ipBlocked) return fail('پایش مداوم: اتصال به سایت وسط ورود قطع شد — احتمال بلاک IP', 'block')
+    // پاپ‌آپ خطای سرور (خطا در پردازش درخواست / 503) ⇒ مرورگر بسته شود و ۱-۲ دقیقه صبر
+    if (serverPopupMsg) return fail(`پاپ‌آپ خطای سرور هنگام ورود: ${serverPopupMsg}`, 'server_popup')
     captchaAttempts = att
     const t = await classifyTemplate(page)
     if (t.error) {
@@ -3195,7 +3168,6 @@ async function runWaybillOnce(opts) {
   let capturedMapLocations = null
   let lastStep = 'فرستنده'
   let midFail = null          // اگر وسط گام‌ها اتصال قطع شد
-  let reachedFinal = false    // به گام آخر (ثبت نهایی) رسیدیم یا نه
 
   try {
   console.log('\n═══ ' + STEP_SENDER.label + ' ═══')
@@ -3291,7 +3263,6 @@ async function runWaybillOnce(opts) {
   if (!opts.captureMapLocations && ok8) {
     console.log('\n═══ گام ۹: تایید مشخصات و ثبت نهایی ═══')
     lastStep = 'ثبت نهایی'
-    reachedFinal = true
     const res = await finalConfirmStep(page, OUT, 'step9', { dryRun: !submit, getOtpCode: opts.getOtpCode })
     ok9 = !!res && (typeof res === 'object' ? res.success !== false : true)
     if (res && typeof res === 'object' && res.success === false) {
@@ -3313,15 +3284,25 @@ async function runWaybillOnce(opts) {
        گزارش می‌شد و دلیل واقعی گم می‌شد. */
     const msg = String((e && e.message) || e).split('\n')[0].slice(0, 160)
     if (isPageDeadError(e))      midFail = { kind: 'dead',  error: `مرورگر در گام «${lastStep}» بسته شد` }
+    else if (/SERVER_POPUP/i.test(msg)) midFail = { kind: 'server_popup', error: cleanSiteErrorMessage(msg.replace(/^SERVER_POPUP:\s*/i, '')) + ` (گام «${lastStep}»)` }
     else if (/DRIVER_PLATE_NOT_FOUND/i.test(msg)) midFail = { kind: 'driver_plate_not_found', error: msg.replace(/^DRIVER_PLATE_NOT_FOUND:\s*/i, '') }
     else if (/SERVER_TEMP_STEP3/i.test(msg) || isServerTempError(e)) midFail = { kind: 'busy', error: cleanSiteErrorMessage(msg.replace(/^SERVER_TEMP_STEP3:\s*/i, '')) }
     else if (isNetBlockError(e)) midFail = { kind: 'block', error: `اتصال در گام «${lastStep}» قطع شد (احتمال بلاک IP): ${msg}` }
+    else if (isRateLimitError(e)) midFail = { kind: 'rate_limited', error: cleanSiteErrorMessage(msg) }
     else if (isAccountRestrictedError(e)) midFail = { kind: 'account_restricted', error: cleanSiteErrorMessage(msg) }
     else                         midFail = { kind: 'error', error: `خطا در گام «${lastStep}»: ${msg}` }
     console.log(`   ✖ ${midFail.error}`)
   }
 
   /* اگر گامی بدون پرتاب خطا شکست خورد، ببین علتش سلامت صفحه بوده یا داده */
+  if (!midFail && !(opts.captureMapLocations ? ok6 : ok9) && ipBlocked) {
+    midFail = { kind: 'block', error: `پایش مداوم: اتصال به سایت وسط عملیات قطع شد — احتمال بلاک IP (گام «${lastStep}»)` }
+    console.log(`   ✖ ${midFail.error}`)
+  }
+  if (!midFail && !(opts.captureMapLocations ? ok6 : ok9) && serverPopupMsg) {
+    midFail = { kind: 'server_popup', error: `پاپ‌آپ خطای سرور: ${serverPopupMsg} (گام «${lastStep}»)` }
+    console.log(`   ✖ ${midFail.error}`)
+  }
   if (!midFail && !(opts.captureMapLocations ? ok6 : ok9)) {
     const h = await pageHealth(page)
     if (h !== 'ok') {
@@ -3348,6 +3329,8 @@ async function runWaybillOnce(opts) {
   }
   console.log('─'.repeat(46))
 
+  stopIpWatchdog()
+
   const swalNow = await readSwalError(page)
 
   if (keepOpenMs > 0) {
@@ -3356,30 +3339,25 @@ async function runWaybillOnce(opts) {
   }
 
   const success = opts.captureMapLocations ? !!(ok5 && ok6 && capturedMapLocations) : !!ok9
-  const keepOpen = !!(keepOpenOnFinal && reachedFinal)
+  /* اگر پیام روی صفحه «محدودیت زمانی ثبت بارنامه شهری» بود، نوع را درست علامت بزن
+     تا ورکر به‌جای تلاش فوری، ۳۰ دقیقه صبر کند */
+  const failMsg = midFail ? midFail.error : (swalNow || `گام «${lastStep}» ناموفق بود`)
+  let failKind = midFail ? midFail.kind : 'error'
+  if (!success && RATE_LIMIT_RE.test(String(failMsg || ''))) failKind = 'rate_limited'
+  else if (!success && failKind === 'error' && SERVER_POPUP_RE.test(String(failMsg || ''))) failKind = 'server_popup'
   const result = {
     success,
     trackingCode,
     mapLocations: capturedMapLocations,
     steps,
     lastStep,
-    kind: success ? 'ok' : (midFail ? midFail.kind : 'error'),
-    error: success ? null
-         : (midFail ? midFail.error : (swalNow || `گام «${lastStep}» ناموفق بود`)),
-    keepOpen,
-    page: (closeBrowser && !keepOpen) ? null : page,
-    browser: (closeBrowser && !keepOpen) ? null : browser,
+    kind: success ? 'ok' : failKind,
+    error: success ? null : failMsg,
+    page: closeBrowser ? null : page,
+    browser: closeBrowser ? null : browser,
   }
 
-  if (keepOpen) {
-    KEPT_BROWSER = browser
-    KEPT_PAGE = page
-    browser.on('disconnected', () => { releaseKeptBrowser() })
-    console.log('\n🖥 [موقت] مرورگر باز نگه داشته شد — نتیجه را در پنجره‌ی مرورگر ببینید.')
-    console.log('   برای بستن: پنجره را دستی ببندید، یا پرچم BARBARG_KEEP_OPEN_ON_FINAL را خاموش کنید.')
-  } else if (closeBrowser) {
-    await browser.close().catch(() => {})
-  }
+  if (closeBrowser) await browser.close().catch(() => {})
   return result
 }
 
@@ -3422,18 +3400,6 @@ async function isSiteReallyBack() {
   }
 }
 
-/* 🖥 [موقت] باز نگه‌داشتن مرورگر بعد از گام آخر ───────────────────────
-   وقتی پرچم keepOpenOnFinal روشن باشد و اجرا به «گام آخر» (ثبت نهایی)
-   برسد، مرورگر بسته نمی‌شود و نتیجه (هرچه باشد) روی صفحه می‌ماند.
-   مرورگر اینجا نگه داشته می‌شود تا Garbage Collector آن را نبندد. */
-let KEPT_BROWSER = null
-let KEPT_PAGE = null
-function releaseKeptBrowser() { KEPT_BROWSER = null; KEPT_PAGE = null }
-function closeKeptBrowser() {
-  if (KEPT_BROWSER) KEPT_BROWSER.close().catch(() => {})
-  releaseKeptBrowser()
-}
-
 /* ═══════════════════════════════════════════════════════════════════
    runWaybill — لایه‌ی مقاومت روی runWaybillOnce
 
@@ -3460,11 +3426,8 @@ async function runWaybill(opts) {
     shouldStop = null,     // تابع اختیاری: اگر true برگرداند، متوقف شو
   } = opts
 
-  /* اگر از اجرای قبلی مرورگری باز مانده (حالت موقت)، پیش از شروع جدید ببندش */
-  closeKeptBrowser()
-
   // این نوع خطاها یعنی «سایت/شبکه» — ارزش صبر کردن دارد
-  const RETRY_LONG  = ['block', 'busy', 'waf', 'timeout']
+  const RETRY_LONG  = ['block', 'busy', 'waf', 'timeout', 'server_popup']
   const RETRY_SHORT = ['dead', 'login', 'driver_plate_not_found', 'otp_failed']
 
   /* سقف تلاش برای هر نوع — عینا مطابق test-step1.js
@@ -3480,11 +3443,13 @@ async function runWaybill(opts) {
     login:   maxRestarts,
     driver_plate_not_found: 10,
     otp_failed: 2,
+    // پاپ‌آپ «خطا در پردازش درخواست» / 503 — مثل busy تا وقتی سایت سالم شود
+    server_popup: Number.POSITIVE_INFINITY,
   }
 
   let last = null
 
-  for (let attempt = 1; attempt <= maxRestarts || (last && last.kind === 'busy'); attempt++) {
+  for (let attempt = 1; attempt <= maxRestarts || (last && (last.kind === 'busy' || last.kind === 'server_popup')); attempt++) {
     if (shouldStop && await shouldStop()) {
       console.log('   ⏹ درخواست توقف دریافت شد')
       return last || { success: false, error: 'متوقف شد', kind: 'stopped', steps: [] }
@@ -3505,12 +3470,6 @@ async function runWaybill(opts) {
       console.log(`   ✖ خطای غیرمنتظره: ${msg}`)
     }
 
-    /* 🖥 [موقت] اگر گام آخر اجرا شد، دیگر تلاش مجدد نکن و مرورگر را باز بگذار */
-    if (last && last.keepOpen) {
-      console.log(`   🖥 [موقت] گام آخر اجرا شد (نتیجه: ${last.success ? '✅ موفق' : '✖ ناموفق'}) — مرورگر باز می‌ماند`)
-      return last
-    }
-
     if (last.success) {
       if (attempt > 1) console.log(`   ✅ در تلاش ${attempt} موفق شد`)
       return last
@@ -3529,6 +3488,14 @@ async function runWaybill(opts) {
     if (kind === 'account_restricted') {
       console.log(`   🛑 ${last.error}`)
       console.log('      حساب در صدور بارنامه شهری محدود شده — همه عملیات‌های این اکانت متوقف می‌شود')
+      return last
+    }
+
+    /* محدودیت زمانی ثبت بارنامه شهری ⇒ داخل موتور تکرار نمی‌کنیم؛
+       ورکر خودش وظیفه را ۳۰ دقیقه بعد دوباره در صف می‌گذارد. */
+    if (kind === 'rate_limited') {
+      console.log(`   ⏸ ${last.error}`)
+      console.log('      محدودیت زمانی سایت — عملیات این اکانت/پلاک ۳۰ دقیقه بعد دوباره اجرا می‌شود')
       return last
     }
 
@@ -3560,6 +3527,7 @@ async function runWaybill(opts) {
       waf:   'چالش امنیتی WAF',
       dead:  'مرورگر بسته شد',
       login: 'سشن منقضی شد',
+      server_popup: 'پاپ‌آپ خطای سرور (خطا در پردازش درخواست / 503)',
     }[kind] || kind
 
     // سقف تلاش برای هر نوع — مطابق فایل اصلی
@@ -3584,6 +3552,8 @@ async function runWaybill(opts) {
         kind === 'block'   ? 180000 + Math.random() * 120000
       // خطاهای Service Unavailable / خطا در برقراری ارتباط با سرور: ۱ دقیقه وقفه، سپس شروع کامل از صفر
       : kind === 'busy'    ? 60 * 1000
+      // پاپ‌آپ «خطا در پردازش درخواست» / 503: بستن مرورگر، ۱ تا ۲ دقیقه صبر، شروع از اول
+      : kind === 'server_popup' ? rand(1 * 60 * 1000, 2 * 60 * 1000)
       : kind === 'timeout' ? rand(2 * 60 * 1000, 5 * 60 * 1000)
       :                      rand(2 * 60 * 1000, 5 * 60 * 1000)
 
@@ -4494,7 +4464,6 @@ module.exports = {
   isNetBlockError, isPageDeadError, isAccountRestrictedError, isServerTempError, isPermanentError,
   classifyCredentialError,
   isServerBusy, readBusyMessage, readSwalError, waitForSwalError, sleepWithLog,
-  closeKeptBrowser,
   STEP_SENDER, STEP_RECEIVER, STEP_ORIGIN, STEP_DEST,
   SITE, LOGIN_URL, TARGET_URL, OUT,
 }

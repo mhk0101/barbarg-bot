@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { requirePermission } from '@/lib/auth/permissions'
 
 export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'view_notifications')
+  if (!guard.ok) return guard.response
   try {
     const { searchParams } = new URL(request.url)
     const unreadOnly = searchParams.get('unread') === 'true'
@@ -14,6 +17,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const guard = await requirePermission(request, 'view_notifications')
+  if (!guard.ok) return guard.response
   try {
     const body = await request.json()
     const notification = await prisma.notification.create({ data: { title: body.title, message: body.message, type: body.type || 'info' } })
@@ -24,6 +29,8 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
+  const guard = await requirePermission(request, 'view_notifications')
+  if (!guard.ok) return guard.response
   try {
     const body = await request.json()
     if (body.id) {
@@ -37,7 +44,9 @@ export async function PUT(request: NextRequest) {
   }
 }
 
-export async function DELETE() {
+export async function DELETE(request: NextRequest) {
+  const guard = await requirePermission(request, 'view_notifications')
+  if (!guard.ok) return guard.response
   try {
     await prisma.notification.deleteMany()
     return NextResponse.json({ success: true })

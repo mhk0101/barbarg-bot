@@ -1,7 +1,10 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { requireLogin } from '@/lib/auth/permissions'
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const guard = await requireLogin(request)
+  if (!guard.ok) return guard.response
   try {
     const [totalAccounts, totalPlates, totalWaybills, jobStatusGroups, profileStats] = await Promise.all([
       prisma.account.count(),

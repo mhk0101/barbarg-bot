@@ -1,16 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { requirePermission } from '@/lib/auth/permissions'
 
 export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'view_waybill')
+  if (!guard.ok) return guard.response
   try {
     const { searchParams } = new URL(request.url)
     const search = searchParams.get('search') || ''
     const status = searchParams.get('status')
+    const plate = searchParams.get('plate') || ''
     const page = parseInt(searchParams.get('page') || '1')
     const limit = parseInt(searchParams.get('limit') || '50')
 
     const where: Record<string, unknown> = {}
     if (status && status !== 'ALL') where.status = status
+
+    // فیلتر پلاک (برای دیالوگ تاریخچه در «ثبت سریع») و جستجو (پلاک/شماره باربرگ/راننده)
+    const waybillWhere: Record<string, unknown> = {}
+    if (plate) waybillWhere.plate = { plateNumber: { contains: plate, mode: 'insensitive' as const } }
+    if (search) {
+      waybillWhere.OR = [
+        { plate: { plateNumber: { contains: search, mode: 'insensitive' as const } } },
+        { waybillNumber: { contains: search, mode: 'insensitive' as const } },
+        { driver: { name: { contains: search, mode: 'insensitive' as const } } },
+      ]
+    }
+    if (plate || search) where.waybill = waybillWhere
 
     const [jobs, total, stats] = await Promise.all([
       prisma.job.findMany({

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { requirePermission } from '@/lib/auth/permissions'
 
 
 async function reconcileRunningResults() {
@@ -80,6 +81,8 @@ async function reconcileRunningResults() {
 }
 
 export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'view_queue')
+  if (!guard.ok) return guard.response
   try {
     await reconcileRunningResults()
     const { searchParams } = new URL(request.url)

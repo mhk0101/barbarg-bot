@@ -9,7 +9,7 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { toast } from 'sonner'
-import { Play, Search, Car, User, MapPin, Clock, Zap, History, Eye, Trash2 } from 'lucide-react'
+import { Play, Search, Car, History, Trash2 } from 'lucide-react'
 import { registrationService } from '@/lib/services/RegistrationService'
 import { logService } from '@/lib/services/LogService'
 
@@ -33,6 +33,7 @@ export default function QuickRegistration() {
   const [loading, setLoading] = useState(true)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyData, setHistoryData] = useState<Array<{ id: string; plateNumber: string; status: string; date: string }>>([])
+  const [starting, setStarting] = useState(false)
 
   const fetchTemplates = useCallback(async () => {
     setLoading(true)
@@ -49,26 +50,55 @@ export default function QuickRegistration() {
   const filtered = templates.filter((t) => t.plateNumber.includes(search) || t.driverName.includes(search) || t.senderFirstName.includes(search))
 
   const startQuickRegistration = async () => {
-    if (!selectedTemplate) return
+    if (!selectedTemplate || starting) return
+    setStarting(true)
     try {
-      await fetch('/api/quick-jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const res = await fetch('/api/quick-jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ templateId: selectedTemplate.id, plateNumber: selectedTemplate.plateNumber, targetCount }),
       })
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'خطا در شروع ثبت سریع') }
       await registrationService.saveHistory({ plateNumber: selectedTemplate.plateNumber, status: 'queue_started' })
       logService.log('quick_reg_start', 'registration', `${selectedTemplate.plateNumber} - هدف: ${targetCount}`, 'info')
       toast.success(`ثبت سریع ${targetCount} باربرگ شروع شد!`)
       setCountDialog(false); setSelectedTemplate(null); fetchJobs()
-    } catch { toast.error('خطا در شروع ثبت سریع') }
-    setCountDialog(false)
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'خطا در شروع ثبت سریع') }
+    finally { setStarting(false) }
   }
 
   const viewHistory = async (plate: string) => {
     try {
       const res = await fetch(`/api/history?plate=${encodeURIComponent(plate)}`)
       const d = await res.json()
-      setHistoryData(Array.isArray(d.data) ? d.data : [])
+      // پاسخ /api/history به شکل { records, stats, pagination } است
+      const recs = Array.isArray(d.records) ? d.records : []
+      setHistoryData(recs.map((r: { id: string; plateNumber: string; status: string; createdAt: string }) => ({
+        id: r.id,
+        plateNumber: r.plateNumber,
+        status: r.status === 'completed' ? 'success' : (r.status === 'failed' ? 'failed' : 'pending'),
+        date: new Date(r.createdAt).toLocaleString('fa-IR'),
+      })))
       setHistoryOpen(true)
     } catch { setHistoryData([]); setHistoryOpen(true) }
+  }
+
+  const handleDeleteTemplate = async (t: Template) => {
+    if (!window.confirm(`قالب «${t.plateNumber}» حذف شود؟ کارهای ثبت سریعِ وابسته هم حذف می‌شوند.`)) return
+    try {
+      const res = await fetch(`/api/templates/${t.id}`, { method: 'DELETE' })
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'خطا در حذف') }
+      toast.success(`قالب «${t.plateNumber}» حذف شد`)
+      fetchTemplates(); fetchJobs()
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'خطا در حذف قالب') }
+  }
+
+  const handleDeleteJob = async (id: string) => {
+    if (!window.confirm('این آیتم از صف ثبت سریع حذف شود؟')) return
+    try {
+      const res = await fetch(`/api/quick-jobs?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'خطا در حذف') }
+      toast.success('از صف حذف شد')
+      fetchJobs()
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'خطا در حذف از صف') }
   }
 
   const statusConfig: Record<string, { label: string; color: string }> = {
@@ -94,7 +124,12 @@ export default function QuickRegistration() {
                 <div key={job.id} className="rounded-lg border p-4">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2"><Badge className={sc.color}>{sc.label}</Badge><span className="font-mono font-bold">{job.plateNumber}</span></div>
-                    <span className="text-sm text-muted-foreground">{job.completedCount}/{job.targetCount}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">{job.completedCount}/{job.targetCount}</span>
+                      <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive hover:text-destructive" onClick={() => handleDeleteJob(job.id)} title="حذف از صف">
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
                   </div>
                   <div className="h-2 rounded-full bg-muted overflow-hidden"><div className="h-full bg-primary transition-all" style={{ width: `${progress}%` }} /></div>
                 </div>
@@ -123,7 +158,8 @@ export default function QuickRegistration() {
                   <div className="flex items-center justify-between pt-1 border-t">
                     <span className="text-[10px] text-muted-foreground">{t.useCount} بار استفاده شده</span>
                     <div className="flex gap-1">
-                      <Button size="sm" variant="ghost" className="h-6 px-2" onClick={(e) => { e.stopPropagation(); viewHistory(t.plateNumber) }}><History className="size-3" /></Button>
+                      <Button size="sm" variant="ghost" className="h-6 px-2" onClick={(e) => { e.stopPropagation(); viewHistory(t.plateNumber) }} title="تاریخچه"><History className="size-3" /></Button>
+                      <Button size="sm" variant="ghost" className="h-6 px-2 text-destructive hover:text-destructive" onClick={(e) => { e.stopPropagation(); handleDeleteTemplate(t) }} title="حذف قالب"><Trash2 className="size-3" /></Button>
                     </div>
                   </div>
                 </div>
@@ -148,7 +184,7 @@ export default function QuickRegistration() {
                 <Input type="number" value={targetCount} onChange={(e) => setTargetCount(parseInt(e.target.value) || 1)} min={1} max={100} className="h-10 text-center text-lg" /></div>
               <div className="flex justify-end gap-2">
                 <Button variant="outline" onClick={() => setCountDialog(false)}>انصراف</Button>
-                <Button onClick={startQuickRegistration} className="bg-green-600 hover:bg-green-700"><Play className="size-4 ml-2" /> شروع</Button>
+                <Button onClick={startQuickRegistration} disabled={starting} className="bg-green-600 hover:bg-green-700"><Play className="size-4 ml-2" /> {starting ? 'در حال شروع…' : 'شروع'}</Button>
               </div>
             </div>
           )}
@@ -161,7 +197,15 @@ export default function QuickRegistration() {
           <div className="space-y-2 max-h-[400px] overflow-y-auto">
             {historyData.length === 0 ? <p className="text-center text-muted-foreground py-4">تاریخچه‌ای یافت نشد</p> : historyData.map((h) => (
               <div key={h.id} className="flex items-center justify-between rounded-lg border p-3">
-                <div className="flex items-center gap-2"><Badge variant={h.status === 'success' ? 'default' : 'destructive'} className="text-[10px]">{h.status === 'success' ? 'موفق' : 'ناموفق'}</Badge><span className="text-sm">{h.date}</span></div>
+                <div className="flex items-center gap-2">
+                  <Badge
+                    variant={h.status === 'success' ? 'default' : h.status === 'failed' ? 'destructive' : 'secondary'}
+                    className="text-[10px]"
+                  >
+                    {h.status === 'success' ? 'موفق' : h.status === 'failed' ? 'ناموفق' : 'در انتظار'}
+                  </Badge>
+                  <span className="text-sm">{h.date}</span>
+                </div>
                 <span className="text-xs text-muted-foreground">{h.plateNumber}</span>
               </div>
             ))}

@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/auth/permissions'
 import { verifyToken, getAuditLogs } from '@/lib/auth/authService'
 
 export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'view_logs')
+  if (!guard.ok) return guard.response
   const token = request.cookies.get('access_token')?.value
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const payload = await verifyToken(token)

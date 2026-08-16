@@ -1,5 +1,6 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { requirePermission } from '@/lib/auth/permissions'
 import { getRedis } from '@/lib/redis'
 import { browserManager } from '@/automation/browser/BrowserManager'
 import * as fs from 'fs'
@@ -227,7 +228,9 @@ async function getVersion(): Promise<string> {
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'manage_settings')
+  if (!guard.ok) return guard.response
   try {
     const [postgres, redis, bullmq, worker, playwright, sessions, website, memory, cpu, queueStats, version, lastSuccess, lastFailed, lastHeartbeat] = await Promise.all([
       checkPostgres(),

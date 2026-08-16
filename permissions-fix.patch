@@ -1,0 +1,1320 @@
+diff --git a/src/app/api/accounts/[id]/route.ts b/src/app/api/accounts/[id]/route.ts
+index 424ab92..d397517 100644
+--- a/src/app/api/accounts/[id]/route.ts
++++ b/src/app/api/accounts/[id]/route.ts
+@@ -1,13 +1,18 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'manage_settings')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const item = await prisma.account.findUnique({ where: { id }, select: { id: true, username: true, nationalId: true, description: true, status: true, dailyLimit: true, dailyUsed: true, lastActivity: true, createdAt: true } })
+   return item ? NextResponse.json(item) : NextResponse.json({ error: 'Not found' }, { status: 404 })
+ }
+ 
+ export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'manage_settings')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const body = await request.json()
+   if (body.password) {
+@@ -18,7 +23,9 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{
+   return NextResponse.json(item)
+ }
+ 
+-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'manage_settings')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   await prisma.account.delete({ where: { id } })
+   return NextResponse.json({ success: true })
+diff --git a/src/app/api/accounts/route.ts b/src/app/api/accounts/route.ts
+index 252d158..814b0d4 100644
+--- a/src/app/api/accounts/route.ts
++++ b/src/app/api/accounts/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'manage_settings')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const search = searchParams.get('search') || ''
+@@ -17,6 +20,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'manage_settings')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const bcrypt = await import('bcryptjs')
+diff --git a/src/app/api/activity-logs/route.ts b/src/app/api/activity-logs/route.ts
+index 49cf7aa..b4525b8 100644
+--- a/src/app/api/activity-logs/route.ts
++++ b/src/app/api/activity-logs/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_logs')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const level = searchParams.get('level')
+diff --git a/src/app/api/auth/audit/route.ts b/src/app/api/auth/audit/route.ts
+index 45a5bcb..3ee6487 100644
+--- a/src/app/api/auth/audit/route.ts
++++ b/src/app/api/auth/audit/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
++import { requirePermission } from '@/lib/auth/permissions'
+ import { verifyToken, getAuditLogs } from '@/lib/auth/authService'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_logs')
++  if (!guard.ok) return guard.response
+   const token = request.cookies.get('access_token')?.value
+   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+   const payload = await verifyToken(token)
+diff --git a/src/app/api/automation/browsers/route.ts b/src/app/api/automation/browsers/route.ts
+index d5dded6..fd6ce0b 100644
+--- a/src/app/api/automation/browsers/route.ts
++++ b/src/app/api/automation/browsers/route.ts
+@@ -1,10 +1,13 @@
+-import { NextResponse } from 'next/server'
++import { NextRequest, NextResponse } from 'next/server'
++import { requirePermission } from '@/lib/auth/permissions'
+ import * as fs from 'fs'
+ import * as path from 'path'
+ 
+ const SESSION_DIR = path.join(process.cwd(), 'automation-data', 'sessions')
+ 
+-export async function GET() {
++export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'manage_workers')
++  if (!guard.ok) return guard.response
+   try {
+     if (!fs.existsSync(SESSION_DIR)) return NextResponse.json({ sessions: [] })
+     const files = fs.readdirSync(SESSION_DIR).filter((f) => f.endsWith('.json'))
+diff --git a/src/app/api/automation/logs/route.ts b/src/app/api/automation/logs/route.ts
+index a06d550..3e80b1b 100644
+--- a/src/app/api/automation/logs/route.ts
++++ b/src/app/api/automation/logs/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_queue')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const jobId = searchParams.get('jobId')
+diff --git a/src/app/api/automation/results/route.ts b/src/app/api/automation/results/route.ts
+index 4e01b88..5e0bce5 100644
+--- a/src/app/api/automation/results/route.ts
++++ b/src/app/api/automation/results/route.ts
+@@ -1,5 +1,6 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ 
+ async function reconcileRunningResults() {
+@@ -80,6 +81,8 @@ async function reconcileRunningResults() {
+ }
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_queue')
++  if (!guard.ok) return guard.response
+   try {
+     await reconcileRunningResults()
+     const { searchParams } = new URL(request.url)
+diff --git a/src/app/api/automation/session/route.ts b/src/app/api/automation/session/route.ts
+index 7a68ac5..e6022da 100644
+--- a/src/app/api/automation/session/route.ts
++++ b/src/app/api/automation/session/route.ts
+@@ -1,4 +1,5 @@
+ import { NextRequest, NextResponse } from 'next/server'
++import { requirePermission } from '@/lib/auth/permissions'
+ import { browserManager } from '@/automation/browser/BrowserManager'
+ import { chromium } from 'playwright'
+ import path from 'path'
+@@ -7,6 +8,8 @@ import fs from 'fs'
+ const SESSION_DIR = path.join(process.cwd(), 'automation-data', 'sessions')
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'manage_workers')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+ 
+@@ -42,7 +45,9 @@ export async function POST(request: NextRequest) {
+   }
+ }
+ 
+-export async function GET() {
++export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'manage_workers')
++  if (!guard.ok) return guard.response
+   try {
+     if (!fs.existsSync(SESSION_DIR)) return NextResponse.json({ sessions: [] })
+     const files = fs.readdirSync(SESSION_DIR).filter((f) => f.endsWith('.json'))
+diff --git a/src/app/api/automation/workers/route.ts b/src/app/api/automation/workers/route.ts
+index 7e90a8a..304d1e8 100644
+--- a/src/app/api/automation/workers/route.ts
++++ b/src/app/api/automation/workers/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET() {
++export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'manage_workers')
++  if (!guard.ok) return guard.response
+   try {
+     const workers = await prisma.workerStatus.findMany({ orderBy: { name: 'asc' } })
+     return NextResponse.json({ workers })
+@@ -11,6 +14,8 @@ export async function GET() {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'manage_workers')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     if (body.action === 'update' && body.workerId) {
+diff --git a/src/app/api/barbarg-accounts/test-login/route.ts b/src/app/api/barbarg-accounts/test-login/route.ts
+index 97b232e..371e0ba 100644
+--- a/src/app/api/barbarg-accounts/test-login/route.ts
++++ b/src/app/api/barbarg-accounts/test-login/route.ts
+@@ -1,5 +1,6 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ import { decryptPassword } from '@/lib/encryption'
+ import { checkInternetOnline } from '@/lib/network'
+ import path from 'path'
+@@ -95,6 +96,8 @@ async function waitForRetry(accountId: string, ms: number) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'manage_settings')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const { accountId, action } = body
+@@ -333,6 +336,8 @@ export async function POST(request: NextRequest) {
+ }
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'manage_settings')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const accountId = searchParams.get('accountId')
+diff --git a/src/app/api/cargo/[id]/route.ts b/src/app/api/cargo/[id]/route.ts
+index 29c6fd0..50af06c 100644
+--- a/src/app/api/cargo/[id]/route.ts
++++ b/src/app/api/cargo/[id]/route.ts
+@@ -1,20 +1,27 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const item = await prisma.cargo.findUnique({ where: { id } })
+   return item ? NextResponse.json(item) : NextResponse.json({ error: 'Not found' }, { status: 404 })
+ }
+ 
+ export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'edit_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const body = await request.json()
+   const item = await prisma.cargo.update({ where: { id }, data: body })
+   return NextResponse.json(item)
+ }
+ 
+-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'delete_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   await prisma.cargo.delete({ where: { id } })
+   return NextResponse.json({ success: true })
+diff --git a/src/app/api/cargo/route.ts b/src/app/api/cargo/route.ts
+index e818fc2..c275c7b 100644
+--- a/src/app/api/cargo/route.ts
++++ b/src/app/api/cargo/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const search = searchParams.get('search') || ''
+@@ -14,6 +17,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'create_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const item = await prisma.cargo.create({ data: body })
+diff --git a/src/app/api/companies/[id]/route.ts b/src/app/api/companies/[id]/route.ts
+index 2efd722..3c38480 100644
+--- a/src/app/api/companies/[id]/route.ts
++++ b/src/app/api/companies/[id]/route.ts
+@@ -1,20 +1,27 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const item = await prisma.company.findUnique({ where: { id } })
+   return item ? NextResponse.json(item) : NextResponse.json({ error: 'Not found' }, { status: 404 })
+ }
+ 
+ export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'edit_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const body = await request.json()
+   const item = await prisma.company.update({ where: { id }, data: body })
+   return NextResponse.json(item)
+ }
+ 
+-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'delete_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   await prisma.company.delete({ where: { id } })
+   return NextResponse.json({ success: true })
+diff --git a/src/app/api/companies/route.ts b/src/app/api/companies/route.ts
+index 0c36a41..13276dd 100644
+--- a/src/app/api/companies/route.ts
++++ b/src/app/api/companies/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const search = searchParams.get('search') || ''
+@@ -14,6 +17,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'create_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const item = await prisma.company.create({ data: body })
+diff --git a/src/app/api/dashboard/route.ts b/src/app/api/dashboard/route.ts
+index 54e1845..c141851 100644
+--- a/src/app/api/dashboard/route.ts
++++ b/src/app/api/dashboard/route.ts
+@@ -1,7 +1,10 @@
+-import { NextResponse } from 'next/server'
++import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requireLogin } from '@/lib/auth/permissions'
+ 
+-export async function GET() {
++export async function GET(request: NextRequest) {
++  const guard = await requireLogin(request)
++  if (!guard.ok) return guard.response
+   try {
+     const [totalAccounts, totalPlates, totalWaybills, jobStatusGroups, profileStats] = await Promise.all([
+       prisma.account.count(),
+diff --git a/src/app/api/drivers/[id]/route.ts b/src/app/api/drivers/[id]/route.ts
+index ef1a858..89fef9b 100644
+--- a/src/app/api/drivers/[id]/route.ts
++++ b/src/app/api/drivers/[id]/route.ts
+@@ -1,20 +1,27 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'view_drivers')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const item = await prisma.driver.findUnique({ where: { id } })
+   return item ? NextResponse.json(item) : NextResponse.json({ error: 'Not found' }, { status: 404 })
+ }
+ 
+ export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'create_drivers')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const body = await request.json()
+   const item = await prisma.driver.update({ where: { id }, data: body })
+   return NextResponse.json(item)
+ }
+ 
+-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'create_drivers')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   await prisma.driver.delete({ where: { id } })
+   return NextResponse.json({ success: true })
+diff --git a/src/app/api/drivers/route.ts b/src/app/api/drivers/route.ts
+index 93808e9..ba7ff86 100644
+--- a/src/app/api/drivers/route.ts
++++ b/src/app/api/drivers/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_drivers')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const search = searchParams.get('search') || ''
+@@ -14,6 +17,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'create_drivers')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const driver = await prisma.driver.create({ data: body })
+diff --git a/src/app/api/error-center/route.ts b/src/app/api/error-center/route.ts
+index 1f9e6ac..147a2cd 100644
+--- a/src/app/api/error-center/route.ts
++++ b/src/app/api/error-center/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_logs')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const status = searchParams.get('status')
+@@ -88,6 +91,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'control_bot')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const { action, resultId } = body
+diff --git a/src/app/api/export/route.ts b/src/app/api/export/route.ts
+index 80e1393..032aed3 100644
+--- a/src/app/api/export/route.ts
++++ b/src/app/api/export/route.ts
+@@ -1,5 +1,6 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ import ExcelJS from 'exceljs'
+ 
+ type ExportType = 'waybills' | 'accounts' | 'plates' | 'drivers' | 'reports' | 'errors'
+@@ -246,6 +247,8 @@ async function fetchExportData(type: ExportType) {
+ }
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'export_excel')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const type = (searchParams.get('type') || 'waybills') as ExportType
+diff --git a/src/app/api/fuel/route.ts b/src/app/api/fuel/route.ts
+index 97d83fa..0d7b98e 100644
+--- a/src/app/api/fuel/route.ts
++++ b/src/app/api/fuel/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const search = searchParams.get('search') || ''
+@@ -48,6 +51,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const card = await prisma.fuelCard.create({ data: body })
+diff --git a/src/app/api/history/route.ts b/src/app/api/history/route.ts
+index d5bf916..f2f501b 100644
+--- a/src/app/api/history/route.ts
++++ b/src/app/api/history/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const search = searchParams.get('search') || ''
+diff --git a/src/app/api/logs/route.ts b/src/app/api/logs/route.ts
+index 589fb76..012e537 100644
+--- a/src/app/api/logs/route.ts
++++ b/src/app/api/logs/route.ts
+@@ -1,14 +1,19 @@
+ import { NextRequest, NextResponse } from 'next/server'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ const logs: Array<{ id: string; action: string; resource: string; details: Record<string, unknown>; timestamp: string }> = []
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_logs')
++  if (!guard.ok) return guard.response
+   const { searchParams } = new URL(request.url)
+   const limit = parseInt(searchParams.get('limit') || '100')
+   return NextResponse.json({ data: logs.slice(0, limit) })
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_logs')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const entry = { id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ...body, timestamp: new Date().toISOString() }
+diff --git a/src/app/api/notifications/route.ts b/src/app/api/notifications/route.ts
+index bc7681f..ef7c50c 100644
+--- a/src/app/api/notifications/route.ts
++++ b/src/app/api/notifications/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_notifications')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const unreadOnly = searchParams.get('unread') === 'true'
+@@ -14,6 +17,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_notifications')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const notification = await prisma.notification.create({ data: { title: body.title, message: body.message, type: body.type || 'info' } })
+@@ -24,6 +29,8 @@ export async function POST(request: NextRequest) {
+ }
+ 
+ export async function PUT(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_notifications')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     if (body.id) {
+@@ -37,7 +44,9 @@ export async function PUT(request: NextRequest) {
+   }
+ }
+ 
+-export async function DELETE() {
++export async function DELETE(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_notifications')
++  if (!guard.ok) return guard.response
+   try {
+     await prisma.notification.deleteMany()
+     return NextResponse.json({ success: true })
+diff --git a/src/app/api/plate-analytics/[plateNumber]/route.ts b/src/app/api/plate-analytics/[plateNumber]/route.ts
+index a8b159c..86ea893 100644
+--- a/src/app/api/plate-analytics/[plateNumber]/route.ts
++++ b/src/app/api/plate-analytics/[plateNumber]/route.ts
+@@ -1,10 +1,11 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET(
+-  request: NextRequest,
+-  { params }: { params: Promise<{ plateNumber: string }> }
+-) {
++export async function GET(request: NextRequest,
++  { params }: { params: Promise<{ plateNumber: string }> }) {
++  const guard = await requirePermission(request, 'view_reports')
++  if (!guard.ok) return guard.response
+   try {
+     const { plateNumber: rawPlateNumber } = await params
+     const plateNumber = decodeURIComponent(rawPlateNumber)
+diff --git a/src/app/api/plate-analytics/route.ts b/src/app/api/plate-analytics/route.ts
+index c640db5..59bbb6f 100644
+--- a/src/app/api/plate-analytics/route.ts
++++ b/src/app/api/plate-analytics/route.ts
+@@ -1,5 +1,6 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ interface PlateRow {
+   plateNumber: string
+@@ -26,6 +27,8 @@ interface MessageRow {
+ }
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_reports')
++  if (!guard.ok) return guard.response
+   try {
+     const searchParams = request.nextUrl.searchParams
+     const dateFrom = searchParams.get('dateFrom')
+diff --git a/src/app/api/plate-inquiry/route.ts b/src/app/api/plate-inquiry/route.ts
+index 7c3060b..bf2562b 100644
+--- a/src/app/api/plate-inquiry/route.ts
++++ b/src/app/api/plate-inquiry/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_plates')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const plateNumber = searchParams.get('plate') || ''
+diff --git a/src/app/api/plates/[id]/route.ts b/src/app/api/plates/[id]/route.ts
+index f2409e1..742bad1 100644
+--- a/src/app/api/plates/[id]/route.ts
++++ b/src/app/api/plates/[id]/route.ts
+@@ -1,20 +1,27 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'view_plates')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const item = await prisma.licensePlate.findUnique({ where: { id }, include: { account: { select: { id: true, username: true, status: true } }, vehicle: true, driver: true } })
+   return item ? NextResponse.json(item) : NextResponse.json({ error: 'Not found' }, { status: 404 })
+ }
+ 
+ export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'create_plates')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const body = await request.json()
+   const item = await prisma.licensePlate.update({ where: { id }, data: body })
+   return NextResponse.json(item)
+ }
+ 
+-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'create_plates')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   await prisma.licensePlate.delete({ where: { id } })
+   return NextResponse.json({ success: true })
+diff --git a/src/app/api/plates/route.ts b/src/app/api/plates/route.ts
+index 34a63b8..0172998 100644
+--- a/src/app/api/plates/route.ts
++++ b/src/app/api/plates/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_plates')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const search = searchParams.get('search') || ''
+@@ -25,6 +28,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'create_plates')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const { plateNumber, province, accountId } = body
+diff --git a/src/app/api/quick-jobs/route.ts b/src/app/api/quick-jobs/route.ts
+index 4dab89d..68b1d25 100644
+--- a/src/app/api/quick-jobs/route.ts
++++ b/src/app/api/quick-jobs/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET() {
++export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_queue')
++  if (!guard.ok) return guard.response
+   try {
+     const data = await prisma.quickRegistrationJob.findMany({ orderBy: { createdAt: 'desc' }, include: { template: true } })
+     return NextResponse.json({ data })
+@@ -11,6 +14,8 @@ export async function GET() {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'control_bot')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const job = await prisma.quickRegistrationJob.create({ data: { templateId: body.templateId, plateNumber: body.plateNumber, targetCount: body.targetCount, status: 'pending' } })
+@@ -22,6 +27,8 @@ export async function POST(request: NextRequest) {
+ }
+ 
+ export async function PATCH(request: NextRequest) {
++  const guard = await requirePermission(request, 'control_bot')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const job = await prisma.quickRegistrationJob.update({ where: { id: body.id }, data: { completedCount: body.completedCount, status: body.status, startedAt: body.startedAt, completedAt: body.completedAt } })
+diff --git a/src/app/api/receivers/[id]/route.ts b/src/app/api/receivers/[id]/route.ts
+index 2faf1bb..92f80bd 100644
+--- a/src/app/api/receivers/[id]/route.ts
++++ b/src/app/api/receivers/[id]/route.ts
+@@ -1,20 +1,27 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const item = await prisma.receiver.findUnique({ where: { id }, include: { company: true } })
+   return item ? NextResponse.json(item) : NextResponse.json({ error: 'Not found' }, { status: 404 })
+ }
+ 
+ export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'edit_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const body = await request.json()
+   const item = await prisma.receiver.update({ where: { id }, data: body })
+   return NextResponse.json(item)
+ }
+ 
+-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'delete_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   await prisma.receiver.delete({ where: { id } })
+   return NextResponse.json({ success: true })
+diff --git a/src/app/api/receivers/route.ts b/src/app/api/receivers/route.ts
+index 5da9b81..8930b35 100644
+--- a/src/app/api/receivers/route.ts
++++ b/src/app/api/receivers/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const search = searchParams.get('search') || ''
+@@ -14,6 +17,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'create_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const item = await prisma.receiver.create({ data: body })
+diff --git a/src/app/api/registration-profiles/[id]/toggle/route.ts b/src/app/api/registration-profiles/[id]/toggle/route.ts
+index abdaa38..1b3929a 100644
+--- a/src/app/api/registration-profiles/[id]/toggle/route.ts
++++ b/src/app/api/registration-profiles/[id]/toggle/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function POST(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'create_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const { id } = await params
+     const current = await prisma.registrationProfile.findUnique({
+diff --git a/src/app/api/registration-profiles/stats/route.ts b/src/app/api/registration-profiles/stats/route.ts
+index fa7409b..f29ddba 100644
+--- a/src/app/api/registration-profiles/stats/route.ts
++++ b/src/app/api/registration-profiles/stats/route.ts
+@@ -1,7 +1,10 @@
+-import { NextResponse } from 'next/server'
++import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET() {
++export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const [total, active, disabled, runStats] = await Promise.all([
+       prisma.registrationProfile.count(),
+diff --git a/src/app/api/reports/export/diag/route.ts b/src/app/api/reports/export/diag/route.ts
+index 28ce509..3f427a0 100644
+--- a/src/app/api/reports/export/diag/route.ts
++++ b/src/app/api/reports/export/diag/route.ts
+@@ -5,12 +5,16 @@
+  *
+  * هر مرحله را جدا تست می‌کند تا معلوم شود دقیقا کجا می‌شکند.
+  */
++import { NextRequest } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export const runtime = 'nodejs'
+ export const dynamic = 'force-dynamic'
+ 
+-export async function GET() {
++export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'export_pdf')
++  if (!guard.ok) return guard.response
+   const steps: Array<{ step: string; ok: boolean; detail: string }> = []
+ 
+   const run = async (name: string, fn: () => Promise<string>) => {
+diff --git a/src/app/api/reports/export/route.ts b/src/app/api/reports/export/route.ts
+index f3f250f..adad01c 100644
+--- a/src/app/api/reports/export/route.ts
++++ b/src/app/api/reports/export/route.ts
+@@ -1,5 +1,6 @@
+ import { NextRequest } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ /* pdfkit و exceljs فقط در Node کار می‌کنند (فایل سیستم لازم دارند).
+    هیچ‌کدام بالای فایل ایمپورت نمی‌شوند — وگرنه اگر یکی خطا بدهد،
+@@ -455,6 +456,8 @@ async function generatePdf(rows: AutomationRow[], q: ReportQuery, summary: Retur
+ }
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'export_pdf')
++  if (!guard.ok) return guard.response
+   try {
+     const q = parseQuery(request)
+ 
+diff --git a/src/app/api/reports/route.ts b/src/app/api/reports/route.ts
+index 02e4871..b03a9e8 100644
+--- a/src/app/api/reports/route.ts
++++ b/src/app/api/reports/route.ts
+@@ -1,7 +1,10 @@
+-import { NextResponse } from 'next/server'
++import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET() {
++export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_reports')
++  if (!guard.ok) return guard.response
+   try {
+     const now = new Date()
+     const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+diff --git a/src/app/api/scheduler/route.ts b/src/app/api/scheduler/route.ts
+index 1c0fe2b..6793786 100644
+--- a/src/app/api/scheduler/route.ts
++++ b/src/app/api/scheduler/route.ts
+@@ -1,8 +1,11 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ import { automationQueue } from '../../../../worker/queue'
+ 
+-export async function GET() {
++export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'manage_settings')
++  if (!guard.ok) return guard.response
+   try {
+     const now = new Date()
+     const profiles = await prisma.registrationProfile.findMany({
+@@ -32,6 +35,8 @@ export async function GET() {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'manage_settings')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const { action } = body
+diff --git a/src/app/api/search/route.ts b/src/app/api/search/route.ts
+index db6419f..824d763 100644
+--- a/src/app/api/search/route.ts
++++ b/src/app/api/search/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const q = searchParams.get('q') || ''
+diff --git a/src/app/api/senders/[id]/route.ts b/src/app/api/senders/[id]/route.ts
+index e081586..959b12e 100644
+--- a/src/app/api/senders/[id]/route.ts
++++ b/src/app/api/senders/[id]/route.ts
+@@ -1,20 +1,27 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const item = await prisma.sender.findUnique({ where: { id }, include: { company: true } })
+   return item ? NextResponse.json(item) : NextResponse.json({ error: 'Not found' }, { status: 404 })
+ }
+ 
+ export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'edit_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const body = await request.json()
+   const item = await prisma.sender.update({ where: { id }, data: body })
+   return NextResponse.json(item)
+ }
+ 
+-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'delete_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   await prisma.sender.delete({ where: { id } })
+   return NextResponse.json({ success: true })
+diff --git a/src/app/api/senders/route.ts b/src/app/api/senders/route.ts
+index e9038af..1766c0d 100644
+--- a/src/app/api/senders/route.ts
++++ b/src/app/api/senders/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const search = searchParams.get('search') || ''
+@@ -14,6 +17,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'create_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const item = await prisma.sender.create({ data: body })
+diff --git a/src/app/api/system-health/route.ts b/src/app/api/system-health/route.ts
+index fa4002a..1f1bfb6 100644
+--- a/src/app/api/system-health/route.ts
++++ b/src/app/api/system-health/route.ts
+@@ -1,5 +1,6 @@
+-import { NextResponse } from 'next/server'
++import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ import { getRedis } from '@/lib/redis'
+ import { browserManager } from '@/automation/browser/BrowserManager'
+ import * as fs from 'fs'
+@@ -227,7 +228,9 @@ async function getVersion(): Promise<string> {
+   }
+ }
+ 
+-export async function GET() {
++export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'manage_settings')
++  if (!guard.ok) return guard.response
+   try {
+     const [postgres, redis, bullmq, worker, playwright, sessions, website, memory, cpu, queueStats, version, lastSuccess, lastFailed, lastHeartbeat] = await Promise.all([
+       checkPostgres(),
+diff --git a/src/app/api/tasks/[id]/route.ts b/src/app/api/tasks/[id]/route.ts
+index fe9d240..c9cd125 100644
+--- a/src/app/api/tasks/[id]/route.ts
++++ b/src/app/api/tasks/[id]/route.ts
+@@ -1,20 +1,27 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'view_queue')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const item = await prisma.job.findUnique({ where: { id }, include: { waybill: true, logs: true, errorLogs: true } })
+   return item ? NextResponse.json(item) : NextResponse.json({ error: 'Not found' }, { status: 404 })
+ }
+ 
+ export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'control_bot')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const body = await request.json()
+   const item = await prisma.job.update({ where: { id }, data: body })
+   return NextResponse.json(item)
+ }
+ 
+-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'control_bot')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   await prisma.job.delete({ where: { id } })
+   return NextResponse.json({ success: true })
+diff --git a/src/app/api/tasks/route.ts b/src/app/api/tasks/route.ts
+index 670f625..ac30b01 100644
+--- a/src/app/api/tasks/route.ts
++++ b/src/app/api/tasks/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_queue')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const status = searchParams.get('status')
+@@ -23,6 +26,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'control_bot')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const { type, waybillId } = body
+diff --git a/src/app/api/templates/[id]/route.ts b/src/app/api/templates/[id]/route.ts
+index 1ce9422..eea43d2 100644
+--- a/src/app/api/templates/[id]/route.ts
++++ b/src/app/api/templates/[id]/route.ts
+@@ -1,20 +1,27 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const item = await prisma.barbargTemplate.findUnique({ where: { id } })
+   return item ? NextResponse.json(item) : NextResponse.json({ error: 'Not found' }, { status: 404 })
+ }
+ 
+ export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'create_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const body = await request.json()
+   const item = await prisma.barbargTemplate.update({ where: { id }, data: body })
+   return NextResponse.json(item)
+ }
+ 
+-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'create_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   await prisma.barbargTemplate.delete({ where: { id } })
+   return NextResponse.json({ success: true })
+diff --git a/src/app/api/templates/route.ts b/src/app/api/templates/route.ts
+index 8640a33..4b30028 100644
+--- a/src/app/api/templates/route.ts
++++ b/src/app/api/templates/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const plateNumber = searchParams.get('plate') || ''
+@@ -14,6 +17,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'create_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const template = await prisma.barbargTemplate.create({ data: body })
+diff --git a/src/app/api/vehicles/[id]/route.ts b/src/app/api/vehicles/[id]/route.ts
+index cbd4a9e..8036fbf 100644
+--- a/src/app/api/vehicles/[id]/route.ts
++++ b/src/app/api/vehicles/[id]/route.ts
+@@ -1,20 +1,27 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'view_vehicles')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const item = await prisma.vehicle.findUnique({ where: { id }, include: { driver: true, plates: true } })
+   return item ? NextResponse.json(item) : NextResponse.json({ error: 'Not found' }, { status: 404 })
+ }
+ 
+ export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'create_vehicles')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const body = await request.json()
+   const item = await prisma.vehicle.update({ where: { id }, data: body })
+   return NextResponse.json(item)
+ }
+ 
+-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'create_vehicles')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   await prisma.vehicle.delete({ where: { id } })
+   return NextResponse.json({ success: true })
+diff --git a/src/app/api/vehicles/route.ts b/src/app/api/vehicles/route.ts
+index 9313789..a4d314e 100644
+--- a/src/app/api/vehicles/route.ts
++++ b/src/app/api/vehicles/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_vehicles')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const search = searchParams.get('search') || ''
+@@ -23,6 +26,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'create_vehicles')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const vehicle = await prisma.vehicle.create({ data: body })
+diff --git a/src/app/api/waybills/[id]/route.ts b/src/app/api/waybills/[id]/route.ts
+index 33f5524..041bf39 100644
+--- a/src/app/api/waybills/[id]/route.ts
++++ b/src/app/api/waybills/[id]/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+-export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const item = await prisma.waybill.findUnique({
+     where: { id },
+@@ -11,13 +14,17 @@ export async function GET(_r: NextRequest, { params }: { params: Promise<{ id: s
+ }
+ 
+ export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'edit_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   const body = await request.json()
+   const item = await prisma.waybill.update({ where: { id }, data: body })
+   return NextResponse.json(item)
+ }
+ 
+-export async function DELETE(_r: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
++  const guard = await requirePermission(request, 'delete_waybill')
++  if (!guard.ok) return guard.response
+   const { id } = await params
+   await prisma.waybill.delete({ where: { id } })
+   return NextResponse.json({ success: true })
+diff --git a/src/app/api/waybills/route.ts b/src/app/api/waybills/route.ts
+index 1aceb52..5b62eb9 100644
+--- a/src/app/api/waybills/route.ts
++++ b/src/app/api/waybills/route.ts
+@@ -1,7 +1,10 @@
+ import { NextRequest, NextResponse } from 'next/server'
+ import { prisma } from '@/lib/prisma'
++import { requirePermission } from '@/lib/auth/permissions'
+ 
+ export async function GET(request: NextRequest) {
++  const guard = await requirePermission(request, 'view_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const { searchParams } = new URL(request.url)
+     const search = searchParams.get('search') || ''
+@@ -17,6 +20,8 @@ export async function GET(request: NextRequest) {
+ }
+ 
+ export async function POST(request: NextRequest) {
++  const guard = await requirePermission(request, 'create_waybill')
++  if (!guard.ok) return guard.response
+   try {
+     const body = await request.json()
+     const waybill = await prisma.waybill.create({ data: body })
+diff --git a/src/components/layout/Sidebar.tsx b/src/components/layout/Sidebar.tsx
+index d6122b3..61348f4 100644
+--- a/src/components/layout/Sidebar.tsx
++++ b/src/components/layout/Sidebar.tsx
+@@ -18,46 +18,46 @@ const sections = [
+     label: 'عملیات',
+     items: [
+       { label: 'داشبورد', href: '/panel', icon: LayoutDashboard },
+-      { label: 'جستجو', href: '/panel/search', icon: Search },
+-      { label: 'پروفایل‌ها', href: '/panel/profiles', icon: FileText },
+-      { label: 'ثبت سریع', href: '/panel/quick-waybill', icon: Zap },
+-      { label: 'ثبت باربرگ', href: '/panel/waybills/new', icon: Hammer },
+-      { label: 'باربرگ‌ها', href: '/panel/waybills', icon: FileText },
++      { label: 'جستجو', href: '/panel/search', icon: Search, perm: 'view_waybill' },
++      { label: 'پروفایل‌ها', href: '/panel/profiles', icon: FileText, perm: 'view_waybill' },
++      { label: 'ثبت سریع', href: '/panel/quick-waybill', icon: Zap, perm: 'create_waybill' },
++      { label: 'ثبت باربرگ', href: '/panel/waybills/new', icon: Hammer, perm: 'create_waybill' },
++      { label: 'باربرگ‌ها', href: '/panel/waybills', icon: FileText, perm: 'view_waybill' },
+     ],
+   },
+   {
+     label: 'اطلاعات پایه',
+     items: [
+-      { label: 'رانندگان', href: '/panel/drivers', icon: UserCheck },
+-      { label: 'خودروها', href: '/panel/vehicles', icon: Truck },
+-      { label: 'پلاک‌ها', href: '/panel/plates', icon: Car },
+-      { label: 'فرستندگان', href: '/panel/senders', icon: Users },
+-      { label: 'گیرندگان', href: '/panel/receivers', icon: Users },
+-      { label: 'بار', href: '/panel/cargo', icon: FileText },
+-      { label: 'شرکت‌ها', href: '/panel/companies', icon: Shield },
++      { label: 'رانندگان', href: '/panel/drivers', icon: UserCheck, perm: 'view_drivers' },
++      { label: 'خودروها', href: '/panel/vehicles', icon: Truck, perm: 'view_vehicles' },
++      { label: 'پلاک‌ها', href: '/panel/plates', icon: Car, perm: 'view_plates' },
++      { label: 'فرستندگان', href: '/panel/senders', icon: Users, perm: 'view_waybill' },
++      { label: 'گیرندگان', href: '/panel/receivers', icon: Users, perm: 'view_waybill' },
++      { label: 'بار', href: '/panel/cargo', icon: FileText, perm: 'view_waybill' },
++      { label: 'شرکت‌ها', href: '/panel/companies', icon: Shield, perm: 'view_waybill' },
+     ],
+   },
+   {
+     label: 'اتوماسیون',
+     items: [
+-      { label: 'مرکز کنترل', href: '/panel/automation', icon: Bot },
+-      { label: 'وضعیت بلادرنگ', href: '/panel/live-status', icon: Eye },
+-      { label: 'صف وظایف', href: '/panel/automation/queue', icon: ListOrdered },
++      { label: 'مرکز کنترل', href: '/panel/automation', icon: Bot, perm: 'control_bot' },
++      { label: 'وضعیت بلادرنگ', href: '/panel/live-status', icon: Eye, perm: 'view_queue' },
++      { label: 'صف وظایف', href: '/panel/automation/queue', icon: ListOrdered, perm: 'view_queue' },
+       { label: 'ورکرها', href: '/panel/automation/workers', icon: Cpu, perm: 'manage_workers' },
+       { label: 'نشست مرورگر', href: '/panel/automation/browsers', icon: Globe, perm: 'manage_workers' },
+-      { label: 'کپچا', href: '/panel/captcha', icon: Hash },
+-      { label: 'فوروارد پیامک', href: '/panel/sms', icon: MessageSquare },
+-      { label: 'نقشه‌برداری', href: '/panel/mapping', icon: Map },
+-      { label: 'زمان‌بندی', href: '/panel/scheduler', icon: Clock },
+-      { label: 'نتایج عملیات', href: '/panel/automation/results', icon: BarChart3 },
+-      { label: 'خطاها', href: '/panel/errors', icon: AlertTriangle },
++      { label: 'کپچا', href: '/panel/captcha', icon: Hash, perm: 'control_bot' },
++      { label: 'فوروارد پیامک', href: '/panel/sms', icon: MessageSquare, perm: 'manage_settings' },
++      { label: 'نقشه‌برداری', href: '/panel/mapping', icon: Map, perm: 'control_bot' },
++      { label: 'زمان‌بندی', href: '/panel/scheduler', icon: Clock, perm: 'manage_settings' },
++      { label: 'نتایج عملیات', href: '/panel/automation/results', icon: BarChart3, perm: 'view_queue' },
++      { label: 'خطاها', href: '/panel/errors', icon: AlertTriangle, perm: 'view_logs' },
+     ],
+   },
+   {
+     label: 'استعلام',
+     items: [
+-      { label: 'استعلام پلاک', href: '/panel/plate-inquiry', icon: Search },
+-      { label: 'استعلام سوخت', href: '/panel/fuel', icon: Fuel },
++      { label: 'استعلام پلاک', href: '/panel/plate-inquiry', icon: Search, perm: 'view_plates' },
++      { label: 'استعلام سوخت', href: '/panel/fuel', icon: Fuel, perm: 'view_waybill' },
+     ],
+   },
+   {
+@@ -65,11 +65,11 @@ const sections = [
+     items: [
+       { label: 'گزارش‌ها', href: '/panel/reports', icon: BarChart3, perm: 'view_reports' },
+       { label: 'خروجی PDF و اکسل', href: '/panel/reports/export', icon: FileText, perm: 'export_pdf' },
+-      { label: 'تحلیل پلاک‌ها', href: '/panel/plate-analytics', icon: PieChart },
++      { label: 'تحلیل پلاک‌ها', href: '/panel/plate-analytics', icon: PieChart, perm: 'view_reports' },
+       { label: 'خروجی اکسل', href: '/panel/excel', icon: BarChart3, perm: 'export_excel' },
+-      { label: 'تاریخچه ثبت', href: '/panel/history', icon: ScrollText },
++      { label: 'تاریخچه ثبت', href: '/panel/history', icon: ScrollText, perm: 'view_waybill' },
+       { label: 'لاگ‌ها', href: '/panel/logs', icon: ScrollText, perm: 'view_logs' },
+-      { label: 'اعلان‌ها', href: '/panel/notifications', icon: AlertTriangle },
++      { label: 'اعلان‌ها', href: '/panel/notifications', icon: AlertTriangle, perm: 'view_notifications' },
+     ],
+   },
+   {
+@@ -77,7 +77,7 @@ const sections = [
+     items: [
+       { label: 'حساب‌های باربگ', href: '/panel/barbarg-accounts', icon: UserCheck, perm: 'manage_settings' },
+       { label: 'کاربران', href: '/panel/users', icon: UserCog, perm: 'manage_users' },
+-      { label: 'نقش‌ها', href: '/panel/roles', icon: Shield, perm: 'manage_settings' },
++      { label: 'نقش‌ها', href: '/panel/roles', icon: Shield, perm: 'manage_users' },
+       { label: 'تنظیمات', href: '/panel/settings', icon: Settings, perm: 'manage_settings' },
+       { label: 'سلامت سیستم', href: '/panel/system-health', icon: Cpu, perm: 'manage_settings' },
+     ],

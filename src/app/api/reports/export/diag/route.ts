@@ -5,12 +5,16 @@
  *
  * هر مرحله را جدا تست می‌کند تا معلوم شود دقیقا کجا می‌شکند.
  */
+import { NextRequest } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { requirePermission } from '@/lib/auth/permissions'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'export_pdf')
+  if (!guard.ok) return guard.response
   const steps: Array<{ step: string; ok: boolean; detail: string }> = []
 
   const run = async (name: string, fn: () => Promise<string>) => {

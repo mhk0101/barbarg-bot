@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { requirePermission } from '@/lib/auth/permissions'
 import ExcelJS from 'exceljs'
 
 type ExportType = 'waybills' | 'accounts' | 'plates' | 'drivers' | 'reports' | 'errors'
@@ -246,6 +247,8 @@ async function fetchExportData(type: ExportType) {
 }
 
 export async function GET(request: NextRequest) {
+  const guard = await requirePermission(request, 'export_excel')
+  if (!guard.ok) return guard.response
   try {
     const { searchParams } = new URL(request.url)
     const type = (searchParams.get('type') || 'waybills') as ExportType
